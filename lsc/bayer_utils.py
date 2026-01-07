@@ -56,7 +56,7 @@ def extract_bayer_channels(bayer_image_16bit, bayer_pattern_code, black_levels, 
     h, w = bayer_image_16bit.shape
     # 创建与bayer图同样大小的浮点数0矩阵
     channels = {ch: np.zeros((h, w), dtype=np.float32) for ch in ['R', 'Gr', 'Gb', 'B']}
-    
+
     # 临时字典，用于根据pattern将数据填充到正确位置
     temp_channels_bayer = {'R': np.zeros_like(bayer_image_16bit, dtype=np.float32),
                            'Gr': np.zeros_like(bayer_image_16bit, dtype=np.float32),
@@ -92,13 +92,13 @@ def extract_bayer_channels(bayer_image_16bit, bayer_pattern_code, black_levels, 
         bl = black_levels[ch_name]
         # 减去黑电平，并确保值不小于0
         blc_ch = np.maximum(0, temp_channels_bayer[ch_name] - bl)
-        
+
         # 计算归一化因子 (白电平)
         white_level = sensor_max_val - bl
         if white_level <= 0:
             logging.warning(f"通道 {ch_name} 的白电平 <= 0，归一化可能出错。")
             white_level = sensor_max_val
-            
+
         # 归一化到 [0, 1] 范围
         # 只对非零像素进行除法，避免除以0的警告
         normalized_ch = channels[ch_name] # 指向最终要填充的矩阵
@@ -110,21 +110,24 @@ def extract_bayer_channels(bayer_image_16bit, bayer_pattern_code, black_levels, 
     return channels
 
 
-def apply_gains_to_bayer(bayer_blc_float, gain_maps, bayer_pattern_code):
+def apply_gains_to_bayer(bayer_blc_float, gain_maps, bayer_pattern_code, hard_mask): # [修改] 增加 hard_mask 参数
     """
     将通过插值后得到的全尺寸增益图应用到已减去黑电平的浮点Bayer数据上。
+
+    【V2.2 - 鱼眼适配版】
+    - 增加了一个 hard_mask，用于在应用增益后将遮罩外的无效区域清零。
+    - 这是防止Bayer域噪声放大和污染Demosaic的关键步骤。
 
     参数:
         bayer_blc_float (np.array): 减去黑电平后的浮点Bayer图。
         gain_maps (dict): 包含{'R', 'Gr', 'Gb', 'B'}四个通道全尺寸增益图的字典。
         bayer_pattern_code (int): OpenCV的Bayer pattern转换码。
-
-    返回:
-        np.array: 应用增益后的浮点Bayer数据。
+        hard_mask (np.array): (h, w) 尺寸的 0/1 硬遮罩。
     """
     compensated_bayer = bayer_blc_float.copy()
 
     # 根据Bayer Pattern，将对应通道的增益应用到对应的像素位置
+    # (这部分逻辑不变，增益会应用到所有地方，包括无效区)
     if bayer_pattern_code in [cv2.COLOR_BayerRG2BGR_VNG, cv2.COLOR_BayerRG2RGB]:  # RGGB
         compensated_bayer[0::2, 0::2] *= gain_maps['R'][0::2, 0::2]
         compensated_bayer[0::2, 1::2] *= gain_maps['Gr'][0::2, 1::2]
@@ -145,5 +148,12 @@ def apply_gains_to_bayer(bayer_blc_float, gain_maps, bayer_pattern_code):
         compensated_bayer[0::2, 1::2] *= gain_maps['B'][0::2, 1::2]
         compensated_bayer[1::2, 0::2] *= gain_maps['R'][1::2, 0::2]
         compensated_bayer[1::2, 1::2] *= gain_maps['Gr'][1::2, 1::2]
-        
+
+    # --- [关键新增] ---
+    # 无论原始值是多少，在应用增益后（此时无效区的噪声已被放大），
+    # 我们将硬遮罩 (hard_mask) 之外的所有像素强制清零。
+    # 这可以防止Demosaic算法被这些高亮噪点污染。
+    compensated_bayer[hard_mask == 0] = 0.0
+    # -------------------
+
     return compensated_bayer

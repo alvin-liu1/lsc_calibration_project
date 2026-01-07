@@ -111,34 +111,87 @@ def get_manual_circle_mask(image_rgb_float, feather_pixels, output_dir, adjust_s
     cv2.circle(hard_mask, (final_cx, final_cy), final_r, 255, -1)
     kernel_size = int(2 * feather_pixels / 3) | 1
     feathered_mask = cv2.GaussianBlur(hard_mask.astype(np.float32), (kernel_size, kernel_size), 0) / 255.0
-    
+
     return np.clip(feathered_mask, 0.0, 1.0), (final_cx, final_cy, final_r)
+
+def save_gain_tables_qcom_format(gain_matrices, base_filename, output_dir):
+    """
+    [新增] 保存为高通 Chromatix 兼容的 13uQ10 格式。
+    数值 = round(float_gain * 1024)
+    范围 = [1024, 8191]
+    """
+    qcom_dir = os.path.join(output_dir, "qcom_tables_Q10")
+    os.makedirs(qcom_dir, exist_ok=True)
+
+    for ch_name, matrix in gain_matrices.items():
+        # [cite_start] 转换逻辑 [cite: 201, 365]
+        # 文档显示 Mesh Gain 是 13uQ10 格式
+        q10_data = np.round(matrix * 1024.0).astype(np.int32)
+        q10_data = np.clip(q10_data, 1024, 8191)  # 硬件安全钳位
+
+        filename = os.path.join(qcom_dir, f"{base_filename}_{ch_name}_Q10.txt")
+
+        # 保存为制表符分隔的整数矩阵，方便复制到 Excel 或 Chromatix
+        header = (
+            f"Qualcomm 13uQ10 Gain Table ({ch_name})\n"
+            f"Rows: {matrix.shape[0]}, Cols: {matrix.shape[1]}"
+        )
+        np.savetxt(
+            filename,
+            q10_data,
+            fmt="%d",
+            delimiter="\t",
+            header=header
+        )
+
+        logging.info(f"Q10格式增益表已保存: {filename}")
 
 
 def plot_gain_heatmap(matrix, channel_name, save_path):
+    """绘制并保存增益热力图"""
     plt.figure(figsize=(12, 9))
+
     min_val = np.min(matrix)
     max_val = np.max(matrix)
     if max_val - min_val < 0.01:
         max_val = min_val + 0.01
 
-    im = plt.imshow(matrix, cmap='jet', origin='upper', vmin=min_val, vmax=max_val)
+    im = plt.imshow(
+        matrix,
+        cmap="jet",
+        origin="upper",
+        vmin=min_val,
+        vmax=max_val
+    )
 
     for (r, c), val in np.ndenumerate(matrix):
         normalized_val = (val - min_val) / (max_val - min_val + 1e-6)
-        text_color = 'black' if 0.2 < normalized_val < 0.8 else 'white'
-        plt.text(c, r, f'{val:.2f}', ha='center', va='center', color=text_color, fontsize=8,
-                 bbox=dict(boxstyle="round,pad=0.2", fc="black", ec="none", lw=0.5, alpha=0.3))
+        text_color = "black" if 0.2 < normalized_val < 0.8 else "white"
+        plt.text(
+            c, r,
+            f"{val:.2f}",
+            ha="center",
+            va="center",
+            color=text_color,
+            fontsize=8,
+            bbox=dict(
+                boxstyle="round,pad=0.2",
+                fc="black",
+                ec="none",
+                lw=0.5,
+                alpha=0.3
+            )
+        )
 
-    plt.colorbar(im, label='Gain Value')
+    plt.colorbar(im, label="Gain Value")
     plt.title(f"{channel_name} Channel - Final Smoothed Gain Map")
-    plt.xlabel('Grid Column Index')
-    plt.ylabel('Grid Row Index')
+    plt.xlabel("Grid Column Index")
+    plt.ylabel("Grid Row Index")
     plt.xticks(np.arange(matrix.shape[1]))
     plt.yticks(np.arange(matrix.shape[0]))
-    
+
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    plt.savefig(save_path, bbox_inches='tight')
+    plt.savefig(save_path, bbox_inches="tight")
     plt.close()
     logging.info(f"已保存 {channel_name} 通道热力图至 {save_path}")
 
@@ -172,18 +225,18 @@ def create_and_save_analysis_plots(image_results, base_filename, output_dir):
     logging.info("正在生成Matplotlib综合分析图...")
     vis_dir = os.path.join(output_dir, 'visualizations')
     os.makedirs(vis_dir, exist_ok=True)
-    
+
     # 1. 四张关键图像对比 (这部分已是正确的，保持不变)
     plt.figure(figsize=(12, 12))
     plt.suptitle('Image Correction Pipeline: Step-by-Step Comparison', fontsize=16)
 
     titles = ['[1] Original (No LSC, No WB)',
-              '[2] Original + WB (Reference)', 
-              '[3] LSC Corrected (No WB)', 
+              '[2] Original + WB (Reference)',
+              '[3] LSC Corrected (No WB)',
               '[4] Final Result (LSC + WB)']
-    
+
     images_to_plot = [image_results['original_no_wb'],
-                      image_results['original_wb'], 
+                      image_results['original_wb'],
                       image_results['compensated_no_wb'],
                       image_results['compensated_wb']]
 
@@ -192,18 +245,18 @@ def create_and_save_analysis_plots(image_results, base_filename, output_dir):
         plt.imshow(img)
         plt.title(title)
         plt.axis('off')
-    
+
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     save_path_img = os.path.join(vis_dir, f'{base_filename}_1_image_comparison.png')
     plt.savefig(save_path_img, bbox_inches='tight')
     logging.info(f"图像对比分析图已保存至: {save_path_img}")
-    
+
 
     # 2. 【已修改】四张图像的亮度直方图对比
     plt.figure(figsize=(15, 10)) # 调整画布尺寸以适应2x2布局
     plt.suptitle('Brightness Distribution Histograms', fontsize=16)
     bins = 128
-    
+
     # 使用与上面完全一致的标题和图像列表
     for i, (img, title) in enumerate(zip(images_to_plot, titles)):
         plt.subplot(2, 2, i + 1) # 修改为2x2布局
