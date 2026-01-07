@@ -110,19 +110,27 @@ def extract_bayer_channels(bayer_image_16bit, bayer_pattern_code, black_levels, 
     return channels
 
 
-def apply_gains_to_bayer(bayer_blc_float, gain_maps, bayer_pattern_code, hard_mask): # [修改] 增加 hard_mask 参数
+def apply_gains_to_bayer(bayer_blc_float, gain_maps, bayer_pattern_code, hard_mask=None): # [修改] hard_mask改为可选
     """
     将通过插值后得到的全尺寸增益图应用到已减去黑电平的浮点Bayer数据上。
 
-    【V2.2 - 鱼眼适配版】
-    - 增加了一个 hard_mask，用于在应用增益后将遮罩外的无效区域清零。
-    - 这是防止Bayer域噪声放大和污染Demosaic的关键步骤。
+    【V3.0 - 全景拼接优化版】
+    重要变更：不再使用 hard_mask 清零！
+
+    原因：
+    1. 全景拼接需要保留圆外的原始数据（虽然很暗）
+    2. LSC增益表已通过 dampen_gains_by_geometry 将圆外增益压回1.0
+    3. 增益1.0 × 原始暗值 = 保持原样（不放大噪声，也不删除数据）
+
+    对比旧版：
+    - V2.2: compensated_bayer[mask==0] = 0.0  ❌ 破坏拼接
+    - V3.0: 圆外增益=1.0，保持原始值         ✅ 拼接友好
 
     参数:
         bayer_blc_float (np.array): 减去黑电平后的浮点Bayer图。
         gain_maps (dict): 包含{'R', 'Gr', 'Gb', 'B'}四个通道全尺寸增益图的字典。
         bayer_pattern_code (int): OpenCV的Bayer pattern转换码。
-        hard_mask (np.array): (h, w) 尺寸的 0/1 硬遮罩。
+        hard_mask (np.array, optional): 保留用于兼容性，但不再使用。
     """
     compensated_bayer = bayer_blc_float.copy()
 
@@ -149,11 +157,13 @@ def apply_gains_to_bayer(bayer_blc_float, gain_maps, bayer_pattern_code, hard_ma
         compensated_bayer[1::2, 0::2] *= gain_maps['R'][1::2, 0::2]
         compensated_bayer[1::2, 1::2] *= gain_maps['Gr'][1::2, 1::2]
 
-    # --- [关键新增] ---
-    # 无论原始值是多少，在应用增益后（此时无效区的噪声已被放大），
-    # 我们将硬遮罩 (hard_mask) 之外的所有像素强制清零。
-    # 这可以防止Demosaic算法被这些高亮噪点污染。
-    compensated_bayer[hard_mask == 0] = 0.0
+    # --- [V3.0 重要变更] ---
+    # 不再清零圆外区域！原因：
+    # 1. 增益表已通过 dampen_gains_by_geometry 将圆外增益设为1.0
+    # 2. 增益1.0 × 暗像素 = 保持原样（不放大，不删除）
+    # 3. 全景拼接需要这些原始数据进行图像融合
+    #
+    # 旧代码（已移除）: compensated_bayer[hard_mask == 0] = 0.0
     # -------------------
 
     return compensated_bayer

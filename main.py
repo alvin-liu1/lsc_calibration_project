@@ -33,10 +33,12 @@ def main():
     setup_logging()
 
     logging.info("="*50)
-    logging.info("LSC 标定脚本启动 (V2.2 - 高通ISP & 鱼眼适配版)")
+    logging.info("LSC 标定脚本启动 (V3.0 - 全景拼接优化版)")
     logging.info(f"输入文件: {config.RAW_IMAGE_PATH}")
     logging.info(f"输出目录: {os.path.abspath(config.OUTPUT_DIR)}")
     logging.info("="*50)
+    logging.info("⚠ V3.0 重要变更：圆外区域增益=1.0（保留原始数据，不再清零）")
+    logging.info("  适用于全景拼接场景，保留鱼眼边缘信息供拼接算法使用\n")
 
     # 1.5. 配置验证
     logging.info("\n正在验证配置参数...")
@@ -142,9 +144,9 @@ def main():
     avg_bl = np.mean(list(config.BLACK_LEVELS.values()))
     bayer_blc_float = np.maximum(0, original_bayer_16bit.astype(np.float32) - avg_bl)
 
-    # [修改] 调用V2.2版的 apply_gains_to_bayer，传入 hard_mask
+    # [V3.0 变更] 不再传入 hard_mask（圆外增益已在增益表中设为1.0）
     compensated_bayer_float = bayer_utils.apply_gains_to_bayer(
-        bayer_blc_float, full_size_gains, config.BAYER_PATTERN, hard_mask
+        bayer_blc_float, full_size_gains, config.BAYER_PATTERN
     )
 
     # 7. 生成并保存最终结果
@@ -217,9 +219,10 @@ def main():
     logging.info(f"\n均匀性改善: {improvement:+.4f} ({improvement*100:+.2f}%)")
 
     logging.info("\n" + "="*50)
-    logging.info("所有任务已成功完成！ (V2.2 - 鱼眼安全版)")
+    logging.info("所有任务已成功完成！ (V3.0 - 全景拼接优化版)")
     logging.info(f"所有输出文件已保存在目录: {os.path.abspath(config.OUTPUT_DIR)}")
     logging.info("="*50)
+    logging.info("\n💡 提示：圆外区域已保留原始数据（增益=1.0），可直接用于全景拼接")
 
 
 if __name__ == '__main__':

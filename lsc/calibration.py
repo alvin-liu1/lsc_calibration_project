@@ -7,12 +7,16 @@ from . import gain_utils
 
 def dampen_gains_by_geometry(gain_matrix, rows, cols, circle_info, image_w, image_h, damping_ratio, damping_width_px):
     """
-    [鱼眼专用] 径向衰减保护函数。
-    基于物理几何位置，强制将圆外死黑区的增益平滑压回 1.0。
-    用于防止死黑区底噪被过度放大，并配合 Bicubic 插值消除边缘振铃。
+    [鱼眼专用 - 全景拼接优化版] 径向衰减保护函数。
+    基于物理几何位置，强制将圆外无效区的增益平滑压回 1.0。
+
+    **为什么增益要压回1.0而不是清零？**
+    - 增益1.0 = 保持原始像素值不变
+    - 无效区（很暗）应该保持暗，不要被LSC放大（避免噪声）
+    - 保留原始数据供全景拼接算法使用（不要硬清零）
 
     参数:
-        damping_ratio: 开始衰减的半径比例 (例如 1.05 表示在圆外才开始衰减)
+        damping_ratio: 开始衰减的半径比例 (例如 1.0 表示从圆边缘开始)
         damping_width_px: 衰减过渡区的宽度 (像素)
     """
     cx, cy, r_pixel = circle_info
