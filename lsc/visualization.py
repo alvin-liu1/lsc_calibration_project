@@ -69,21 +69,39 @@ def get_manual_circle_mask(image_rgb_float, feather_pixels, output_dir, adjust_s
             cv2.putText(preview_img, "(R)euse, (E)dit, or (N)ew selection?", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             cv2.imshow(window_name, preview_img)
 
-            logging.info("检测到上次的选择参数，请在弹出的窗口操作: 'r' - 复用, 'e' - 编辑, 'n' - 新建")
-            key = cv2.waitKey(0) & 0xFF
-            if key == ord('r'):
-                current_circle = preview_circle
-                start_main_loop = False
-            elif key == ord('e'):
-                current_circle = preview_circle
+            logging.info("检测到上次的选择参数，请在弹出的窗口操作: 'r' - 复用, 'e' - 编辑, 'n' - 新建 (或ESC/关闭窗口跳过)")
+            while True:
+                key = cv2.waitKey(100) & 0xFF
+
+                # 检测窗口关闭或ESC键
+                if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1 or key == 27:
+                    logging.info("窗口关闭或ESC，跳过复用旧参数，创建新选择")
+                    start_main_loop = True
+                    break
+
+                if key == ord('r'):
+                    current_circle = preview_circle
+                    start_main_loop = False
+                    break
+                elif key == ord('e'):
+                    current_circle = preview_circle
+                    break
+                elif key == ord('n'):
+                    break
         except Exception as e:
             logging.warning(f"加载圆形参数失败: {e}. 将创建新的选择。")
 
     if start_main_loop:
-        logging.info("请手动选择圆形有效区域: 左键拖动画圆, 'wasd/zx'微调, 'r'重置, 'q'确认")
+        logging.info("请手动选择圆形有效区域: 左键拖动画圆, 'wasd/zx'微调, 'r'重置, 'q'确认 (或直接关闭窗口)")
         cv2.imshow(window_name, draw_circle_on_image(display_image_bgr, current_circle))
         while True:
             key = cv2.waitKey(1) & 0xFF
+
+            # 检测窗口关闭事件
+            if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                logging.info("检测到窗口关闭，使用当前圆形参数")
+                break
+
             if key == ord('q'): break
             elif key == ord('w'): current_circle['radius'] += adjust_step
             elif key == ord('s'): current_circle['radius'] = max(0, current_circle['radius'] - adjust_step)
@@ -92,6 +110,10 @@ def get_manual_circle_mask(image_rgb_float, feather_pixels, output_dir, adjust_s
             elif key == ord('z'): current_circle['center'] = (current_circle['center'][0], current_circle['center'][1] - adjust_step)
             elif key == ord('x'): current_circle['center'] = (current_circle['center'][0], current_circle['center'][1] + adjust_step)
             elif key == ord('r'): current_circle = {'center': None, 'radius': 0}
+            elif key == 27:  # ESC键也可以退出
+                logging.info("检测到ESC键，使用当前圆形参数")
+                break
+
             cv2.imshow(window_name, draw_circle_on_image(display_image_bgr, current_circle))
 
     cv2.destroyAllWindows()
