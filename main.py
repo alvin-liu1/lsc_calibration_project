@@ -137,7 +137,7 @@ def main():
     logging.info("步骤5: 将最终增益应用回Bayer图像...")
 
     # --- [风险点优化] ---
-    logging.info("  - 使用 'cv2.INTER_LINEAR' (双线性插值) 匹配高通VFE硬件行为...")
+    logging.info("  - 使用 cv2.INTER_LINEAR (双线性插值) 匹配高通VFE硬件行为...")
     full_size_gains = {ch: cv2.resize(matrix, (w, h), interpolation=cv2.INTER_LINEAR)
                        for ch, matrix in final_gain_matrices.items()}
 
