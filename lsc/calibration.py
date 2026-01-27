@@ -203,4 +203,13 @@ def calculate_lsc_gains(
 
         raw_gains[ch_name] = np.clip(damped_gain, 1.0, final_limit).astype(np.float32)
 
+    # [高通ISP最佳实践] Gr/Gb通道平衡，避免Demosaic迷宫纹理
+    logging.info("应用Gr/Gb通道平衡（高通Chromatix最佳实践）...")
+    avg_green = (raw_gains['Gr'] + raw_gains['Gb']) / 2.0
+    gr_gb_diff = np.abs(raw_gains['Gr'] - raw_gains['Gb']).max()
+    logging.info(f"  - 平衡前Gr/Gb最大差异: {gr_gb_diff:.4f}")
+    raw_gains['Gr'] = avg_green
+    raw_gains['Gb'] = avg_green
+    logging.info(f"  - 平衡后Gr/Gb差异: 0.0000 (完全一致)")
+
     return raw_gains

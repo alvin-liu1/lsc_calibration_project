@@ -69,25 +69,11 @@ def get_manual_circle_mask(image_rgb_float, feather_pixels, output_dir, adjust_s
             cv2.putText(preview_img, "(R)euse, (E)dit, or (N)ew selection?", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             cv2.imshow(window_name, preview_img)
 
-            logging.info("检测到上次的选择参数，请在弹出的窗口操作: 'r' - 复用, 'e' - 编辑, 'n' - 新建 (或ESC/关闭窗口跳过)")
-            while True:
-                key = cv2.waitKey(100) & 0xFF
-
-                # 检测窗口关闭或ESC键
-                if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1 or key == 27:
-                    logging.info("窗口关闭或ESC，跳过复用旧参数，创建新选择")
-                    start_main_loop = True
-                    break
-
-                if key == ord('r'):
-                    current_circle = preview_circle
-                    start_main_loop = False
-                    break
-                elif key == ord('e'):
-                    current_circle = preview_circle
-                    break
-                elif key == ord('n'):
-                    break
+            # [自动模式] 直接复用上次参数，跳过按键选择
+            logging.info("检测到上次的圆心参数，自动复用（跳过按键选择）")
+            current_circle = preview_circle
+            start_main_loop = False
+            cv2.destroyWindow(window_name)
         except Exception as e:
             logging.warning(f"加载圆形参数失败: {e}. 将创建新的选择。")
 
