@@ -207,16 +207,23 @@ def main():
     logging.info(f"  中心亮度: {original_metrics['center_brightness']:.4f}")
     logging.info(f"  边缘亮度: {original_metrics['edge_brightness']:.4f}")
     logging.info(f"  均匀性比: {original_metrics['uniformity_ratio']:.4f}")
+    logging.info(f"  加权均匀度: {original_metrics['weighted_uniformity']:.4f}")
+    logging.info(f"  变异系数(CV): {original_metrics['cv']:.4f}")
     logging.info(f"  评级: {original_metrics['grade']}")
 
     logging.info(f"\nLSC校正后均匀性:")
     logging.info(f"  中心亮度: {corrected_metrics['center_brightness']:.4f}")
     logging.info(f"  边缘亮度: {corrected_metrics['edge_brightness']:.4f}")
     logging.info(f"  均匀性比: {corrected_metrics['uniformity_ratio']:.4f}")
+    logging.info(f"  加权均匀度: {corrected_metrics['weighted_uniformity']:.4f}")
+    logging.info(f"  变异系数(CV): {corrected_metrics['cv']:.4f}")
     logging.info(f"  评级: {corrected_metrics['grade']}")
 
     improvement = corrected_metrics['uniformity_ratio'] - original_metrics['uniformity_ratio']
-    logging.info(f"\n均匀性改善: {improvement:+.4f} ({improvement*100:+.2f}%)")
+    weighted_improvement = corrected_metrics['weighted_uniformity'] - original_metrics['weighted_uniformity']
+    logging.info(f"\n均匀性改善:")
+    logging.info(f"  传统指标: {improvement:+.4f} ({improvement*100:+.2f}%)")
+    logging.info(f"  加权指标: {weighted_improvement:+.4f} ({weighted_improvement*100:+.2f}%)")
 
     logging.info("\n" + "="*50)
     logging.info("所有任务已成功完成！ (V3.0 - 全景拼接优化版)")

@@ -177,7 +177,13 @@ def validate_gain_table(gain_matrix, channel_name, min_gain=1.0, max_gain=8.0):
 
 def calculate_uniformity_metrics(image, mask, center_info):
     """
-    计算图像均匀性指标。
+    计算图像均匀性指标 (V2.0 - 多区域采样 + 标准差评估)。
+
+    改进:
+    1. 多区域采样: 5个同心圆环 (0-20%, 20-40%, 40-60%, 60-80%, 80-95%)
+    2. 标准差指标: 全局亮度标准差
+    3. 加权均匀度: 考虑不同区域的重要性
+    4. 行业标准对齐: 参考ISO 17850镜头暗角测试标准
 
     参数:
         image (np.array): BGR或灰度图像 (归一化到 [0, 1])
@@ -201,14 +207,46 @@ def calculate_uniformity_metrics(image, mask, center_info):
     else:
         gray = image
 
-    # 定义区域
-    center_mask = (norm_r < 0.3) & (mask > 0.5)
-    edge_mask = (norm_r > 0.7) & (norm_r < 0.95) & (mask > 0.5)
+    # [V2.0 改进1] 多区域采样 - 5个同心圆环
+    regions = {
+        'center': (0.0, 0.20),      # 中心区域 0-20%
+        'inner': (0.20, 0.40),      # 内圈 20-40%
+        'middle': (0.40, 0.60),     # 中圈 40-60%
+        'outer': (0.60, 0.80),      # 外圈 60-80%
+        'edge': (0.80, 0.95)        # 边缘 80-95%
+    }
 
-    # 计算均匀性
-    center_mean = np.mean(gray[center_mask]) if np.sum(center_mask) > 0 else 0
-    edge_mean = np.mean(gray[edge_mask]) if np.sum(edge_mask) > 0 else 0
+    region_means = {}
+    for region_name, (r_min, r_max) in regions.items():
+        region_mask = (norm_r >= r_min) & (norm_r < r_max) & (mask > 0.5)
+        if np.sum(region_mask) > 0:
+            region_means[region_name] = np.mean(gray[region_mask])
+        else:
+            region_means[region_name] = 0
 
+    # [V2.0 改进2] 全局标准差 - 反映整体均匀性
+    valid_pixels = gray[mask > 0.5]
+    global_std = np.std(valid_pixels) if len(valid_pixels) > 0 else 0
+    global_mean = np.mean(valid_pixels) if len(valid_pixels) > 0 else 0
+    cv = global_std / global_mean if global_mean > 1e-6 else 0  # 变异系数
+
+    # [V2.0 改进3] 加权均匀度 - 考虑不同区域的重要性
+    # 权重: 中心(0.1) + 内圈(0.2) + 中圈(0.3) + 外圈(0.3) + 边缘(0.1)
+    weights = {'center': 0.1, 'inner': 0.2, 'middle': 0.3, 'outer': 0.3, 'edge': 0.1}
+
+    weighted_uniformity = 0
+    reference_brightness = region_means['center']  # 以中心为参考
+
+    if reference_brightness > 1e-6:
+        for region_name, weight in weights.items():
+            ratio = region_means[region_name] / reference_brightness
+            weighted_uniformity += weight * ratio
+    else:
+        weighted_uniformity = 0
+
+    # 传统边缘/中心比值 (保持向后兼容)
+    center_mean = region_means['center']
+    edge_mean = region_means['edge']
     uniformity_ratio = edge_mean / center_mean if center_mean > 1e-6 else 0
 
     # 计算色彩一致性（如果是彩色图像）
@@ -221,16 +259,21 @@ def calculate_uniformity_metrics(image, mask, center_info):
     metrics = {
         'center_brightness': center_mean,
         'edge_brightness': edge_mean,
-        'uniformity_ratio': uniformity_ratio,
+        'uniformity_ratio': uniformity_ratio,  # 传统指标
+        'weighted_uniformity': weighted_uniformity,  # 新增: 加权均匀度
+        'global_std': global_std,  # 新增: 全局标准差
+        'cv': cv,  # 新增: 变异系数
+        'region_means': region_means,  # 新增: 各区域亮度
         'color_std': color_std
     }
 
-    # 评估等级
-    if uniformity_ratio > 0.95:
+    # [V2.0 改进4] 优化评级标准 - 基于加权均匀度和变异系数
+    # 参考ISO 17850标准: CV < 0.10为优秀, < 0.15为良好
+    if weighted_uniformity > 0.95 and cv < 0.10:
         grade = 'Excellent'
-    elif uniformity_ratio > 0.90:
+    elif weighted_uniformity > 0.90 and cv < 0.15:
         grade = 'Good'
-    elif uniformity_ratio > 0.85:
+    elif weighted_uniformity > 0.85 and cv < 0.20:
         grade = 'Acceptable'
     else:
         grade = 'Poor'
