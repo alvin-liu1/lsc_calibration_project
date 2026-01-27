@@ -8,11 +8,19 @@ import cv2
 
 # --- 1. 输入与输出配置 ---
 # 请修改为您当前的 RAW 文件路径
-RAW_IMAGE_PATH = 'input/2904x2900.raw'
+RAW_IMAGE_PATH = 'input/2900mipi.raw'
 OUTPUT_DIR = 'output'
 
+# RAW 文件格式配置
+# 支持的格式:
+#   'auto'       - 自动检测格式（推荐）
+#   'plain'      - Plain RAW (16-bit容器存储10/12-bit数据)
+#   'mipi_raw10' - MIPI RAW10 (4个10-bit像素打包成5字节)
+#   'mipi_raw12' - MIPI RAW12 (2个12-bit像素打包成3字节)
+RAW_FORMAT = 'auto'
+
 # --- 2. 图像基本属性 ---
-IMAGE_WIDTH = 2904
+IMAGE_WIDTH = 2900
 IMAGE_HEIGHT = 2900
 # Bayer 格式: RGGB, BGGR, GBRG, GRBG
 # 请根据 Sensor 规格书确认 (高通通常是 MIPI 顺序)

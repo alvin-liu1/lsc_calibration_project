@@ -3,38 +3,184 @@
 import numpy as np
 import cv2
 import logging
+import os
 
-def read_raw_bayer_image(raw_path, width, height, bit_depth=10):
+def unpack_mipi_raw10(packed_data, width, height):
     """
-    从文件读取裸的RAW Bayer数据。
-    此函数针对10-bit数据存储在16-bit容器中的情况作了优化。
+    解包MIPI RAW10格式数据。
+
+    MIPI RAW10: 4个10-bit像素打包成5字节
+    [P0: 9-2] [P1: 9-2] [P2: 9-2] [P3: 9-2] [P3:1-0 P2:1-0 P1:1-0 P0:1-0]
 
     参数:
-        raw_path (str): .raw文件的路径。
-        width (int): 图像宽度。
-        height (int): 图像高度。
-        bit_depth (int): 数据的位深, 如10或12。
+        packed_data (np.array): 打包的MIPI RAW10数据
+        width (int): 图像宽度
+        height (int): 图像高度
 
     返回:
-        np.array: 包含16位Bayer数据的二维Numpy数组，如果失败则返回None。
+        np.array: 解包后的16-bit Bayer图像
+    """
+    total_pixels = width * height
+    expected_bytes = (total_pixels * 10) // 8
+
+    if len(packed_data) < expected_bytes:
+        raise ValueError(f"MIPI RAW10数据不足: 期望{expected_bytes}字节, 实际{len(packed_data)}字节")
+
+    # 每5字节解包成4个像素
+    num_groups = total_pixels // 4
+    unpacked = np.zeros(total_pixels, dtype=np.uint16)
+
+    for i in range(num_groups):
+        base = i * 5
+        # 读取5字节并转换为int
+        b0, b1, b2, b3, b4 = [int(x) for x in packed_data[base:base+5]]
+
+        # 解包4个10-bit像素
+        p0 = ((b0 << 2) | ((b4 >> 0) & 0x03)) & 0x3FF
+        p1 = ((b1 << 2) | ((b4 >> 2) & 0x03)) & 0x3FF
+        p2 = ((b2 << 2) | ((b4 >> 4) & 0x03)) & 0x3FF
+        p3 = ((b3 << 2) | ((b4 >> 6) & 0x03)) & 0x3FF
+
+        unpacked[i*4:(i+1)*4] = [p0, p1, p2, p3]
+
+    return unpacked.reshape((height, width))
+
+
+def unpack_mipi_raw12(packed_data, width, height):
+    """
+    解包MIPI RAW12格式数据。
+
+    MIPI RAW12: 2个12-bit像素打包成3字节
+    [P0: 11-4] [P1: 11-4] [P1:3-0 P0:3-0]
+
+    参数:
+        packed_data (np.array): 打包的MIPI RAW12数据
+        width (int): 图像宽度
+        height (int): 图像高度
+
+    返回:
+        np.array: 解包后的16-bit Bayer图像
+    """
+    total_pixels = width * height
+    expected_bytes = (total_pixels * 12) // 8
+
+    if len(packed_data) < expected_bytes:
+        raise ValueError(f"MIPI RAW12数据不足: 期望{expected_bytes}字节, 实际{len(packed_data)}字节")
+
+    # 每3字节解包成2个像素
+    num_groups = total_pixels // 2
+    unpacked = np.zeros(total_pixels, dtype=np.uint16)
+
+    for i in range(num_groups):
+        base = i * 3
+        # 读取3字节并转换为int
+        b0, b1, b2 = [int(x) for x in packed_data[base:base+3]]
+
+        # 解包2个12-bit像素
+        p0 = ((b0 << 4) | ((b2 >> 0) & 0x0F)) & 0xFFF
+        p1 = ((b1 << 4) | ((b2 >> 4) & 0x0F)) & 0xFFF
+
+        unpacked[i*2:(i+1)*2] = [p0, p1]
+
+    return unpacked.reshape((height, width))
+
+
+def detect_raw_format(raw_path, width, height, bit_depth):
+    """
+    自动检测RAW文件格式（Plain RAW vs MIPI RAW）。
+
+    参数:
+        raw_path (str): RAW文件路径
+        width (int): 图像宽度
+        height (int): 图像高度
+        bit_depth (int): 位深（10或12）
+
+    返回:
+        str: 'plain', 'mipi_raw10', 或 'mipi_raw12'
+    """
+    file_size = os.path.getsize(raw_path)
+    total_pixels = width * height
+
+    # Plain RAW: 每像素2字节
+    plain_size = total_pixels * 2
+
+    # MIPI RAW10: 每4像素5字节
+    mipi10_size = (total_pixels * 10) // 8
+
+    # MIPI RAW12: 每2像素3字节
+    mipi12_size = (total_pixels * 12) // 8
+
+    # 允许±1%误差
+    tolerance = 0.01
+
+    if abs(file_size - plain_size) / plain_size < tolerance:
+        return 'plain'
+    elif bit_depth == 10 and abs(file_size - mipi10_size) / mipi10_size < tolerance:
+        return 'mipi_raw10'
+    elif bit_depth == 12 and abs(file_size - mipi12_size) / mipi12_size < tolerance:
+        return 'mipi_raw12'
+    else:
+        logging.warning(f"无法识别RAW格式: 文件大小={file_size}, Plain={plain_size}, MIPI10={mipi10_size}, MIPI12={mipi12_size}")
+        return 'plain'  # 默认使用Plain格式
+
+
+def read_raw_bayer_image(raw_path, width, height, bit_depth=10, raw_format='auto'):
+    """
+    从文件读取RAW Bayer数据，支持Plain RAW和MIPI RAW格式。
+
+    支持的格式:
+    - Plain RAW: 16-bit容器存储10/12-bit数据
+    - MIPI RAW10: 4个10-bit像素打包成5字节
+    - MIPI RAW12: 2个12-bit像素打包成3字节
+
+    参数:
+        raw_path (str): .raw文件的路径
+        width (int): 图像宽度
+        height (int): 图像高度
+        bit_depth (int): 数据的位深, 如10或12
+        raw_format (str): RAW格式 ('auto', 'plain', 'mipi_raw10', 'mipi_raw12')
+
+    返回:
+        np.array: 包含16位Bayer数据的二维Numpy数组，如果失败则返回None
     """
     try:
-        expected_pixels = width * height
-        # 以无符号16位小端格式读取文件
-        bayer_data_16bit_container = np.fromfile(raw_path, dtype='<u2', count=expected_pixels)
+        # 自动检测格式
+        if raw_format == 'auto':
+            raw_format = detect_raw_format(raw_path, width, height, bit_depth)
+            logging.info(f"自动检测RAW格式: {raw_format}")
 
-        if bayer_data_16bit_container.size != expected_pixels:
-            logging.error(f"RAW文件尺寸不匹配。期望 {expected_pixels} 像素, 实际读取到 {bayer_data_16bit_container.size}。")
-            raise ValueError("Raw file size mismatch.")
+        # 根据格式读取数据
+        if raw_format == 'mipi_raw10':
+            # MIPI RAW10格式
+            expected_bytes = (width * height * 10) // 8
+            packed_data = np.fromfile(raw_path, dtype=np.uint8, count=expected_bytes)
+            bayer_image_16bit = unpack_mipi_raw10(packed_data, width, height)
+            logging.info(f"成功读取MIPI RAW10文件: {raw_path}, 尺寸: {width}x{height}")
 
-        # 根据位深，使用位掩码提取有效数据
-        # 例如，对于10-bit数据，掩码是 0x03FF (二进制的10个1)
-        mask = (1 << bit_depth) - 1
-        bayer_image_16bit = (bayer_data_16bit_container.astype(np.uint16) & mask)
-        bayer_image_16bit = bayer_image_16bit.reshape((height, width))
+        elif raw_format == 'mipi_raw12':
+            # MIPI RAW12格式
+            expected_bytes = (width * height * 12) // 8
+            packed_data = np.fromfile(raw_path, dtype=np.uint8, count=expected_bytes)
+            bayer_image_16bit = unpack_mipi_raw12(packed_data, width, height)
+            logging.info(f"成功读取MIPI RAW12文件: {raw_path}, 尺寸: {width}x{height}")
 
-        logging.info(f"成功读取RAW文件: {raw_path}, 尺寸: {width}x{height}, 位深: {bit_depth}-bit")
+        else:
+            # Plain RAW格式（默认）
+            expected_pixels = width * height
+            bayer_data_16bit_container = np.fromfile(raw_path, dtype='<u2', count=expected_pixels)
+
+            if bayer_data_16bit_container.size != expected_pixels:
+                logging.error(f"RAW文件尺寸不匹配。期望 {expected_pixels} 像素, 实际读取到 {bayer_data_16bit_container.size}。")
+                raise ValueError("Raw file size mismatch.")
+
+            # 根据位深，使用位掩码提取有效数据
+            mask = (1 << bit_depth) - 1
+            bayer_image_16bit = (bayer_data_16bit_container.astype(np.uint16) & mask)
+            bayer_image_16bit = bayer_image_16bit.reshape((height, width))
+            logging.info(f"成功读取Plain RAW文件: {raw_path}, 尺寸: {width}x{height}, 位深: {bit_depth}-bit")
+
         return bayer_image_16bit
+
     except Exception as e:
         logging.error(f"读取RAW文件时发生错误: {e}")
         return None

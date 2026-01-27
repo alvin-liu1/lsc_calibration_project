@@ -87,15 +87,52 @@ def validate_config(config_module):
 
     # 10. 检查 RAW 文件大小是否匹配预期
     if os.path.exists(config_module.RAW_IMAGE_PATH):
-        expected_size = config_module.IMAGE_WIDTH * config_module.IMAGE_HEIGHT * 2  # 16-bit
         actual_size = os.path.getsize(config_module.RAW_IMAGE_PATH)
+        total_pixels = config_module.IMAGE_WIDTH * config_module.IMAGE_HEIGHT
 
-        if actual_size != expected_size:
-            logging.warning(
-                f"RAW文件大小不匹配。"
-                f"预期: {expected_size} 字节 ({config_module.IMAGE_WIDTH}x{config_module.IMAGE_HEIGHT}), "
-                f"实际: {actual_size} 字节"
+        # 根据RAW_FORMAT配置计算预期大小
+        raw_format = getattr(config_module, 'RAW_FORMAT', 'plain')
+
+        if raw_format == 'auto':
+            # 自动模式：尝试匹配任一格式
+            plain_size = total_pixels * 2
+            mipi10_size = (total_pixels * 10) // 8
+            mipi12_size = (total_pixels * 12) // 8
+
+            tolerance = 0.01
+            is_valid_size = (
+                abs(actual_size - plain_size) / plain_size < tolerance or
+                abs(actual_size - mipi10_size) / mipi10_size < tolerance or
+                abs(actual_size - mipi12_size) / mipi12_size < tolerance
             )
+
+            if not is_valid_size:
+                logging.warning(
+                    f"RAW文件大小不匹配任何已知格式。"
+                    f"实际: {actual_size} 字节, "
+                    f"预期: Plain={plain_size}, MIPI10={mipi10_size}, MIPI12={mipi12_size}"
+                )
+        elif raw_format == 'mipi_raw10':
+            expected_size = (total_pixels * 10) // 8
+            if abs(actual_size - expected_size) / expected_size > 0.01:
+                logging.warning(
+                    f"MIPI RAW10文件大小不匹配。"
+                    f"预期: {expected_size} 字节, 实际: {actual_size} 字节"
+                )
+        elif raw_format == 'mipi_raw12':
+            expected_size = (total_pixels * 12) // 8
+            if abs(actual_size - expected_size) / expected_size > 0.01:
+                logging.warning(
+                    f"MIPI RAW12文件大小不匹配。"
+                    f"预期: {expected_size} 字节, 实际: {actual_size} 字节"
+                )
+        else:  # plain
+            expected_size = total_pixels * 2
+            if actual_size != expected_size:
+                logging.warning(
+                    f"Plain RAW文件大小不匹配。"
+                    f"预期: {expected_size} 字节, 实际: {actual_size} 字节"
+                )
 
     # 返回验证结果
     is_valid = len(errors) == 0

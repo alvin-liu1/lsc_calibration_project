@@ -49,9 +49,10 @@ def main():
             logging.error(f"  - {err}")
         return
 
-    # 2. 读取原始Bayer图像
+    # 2. 读取原始Bayer图像（支持Plain RAW和MIPI RAW格式）
     original_bayer_16bit = bayer_utils.read_raw_bayer_image(
-        config.RAW_IMAGE_PATH, config.IMAGE_WIDTH, config.IMAGE_HEIGHT, bit_depth=10
+        config.RAW_IMAGE_PATH, config.IMAGE_WIDTH, config.IMAGE_HEIGHT,
+        bit_depth=10, raw_format=config.RAW_FORMAT
     )
     if original_bayer_16bit is None:
         logging.error("无法读取RAW文件，程序终止。")
