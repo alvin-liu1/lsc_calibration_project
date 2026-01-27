@@ -37,7 +37,7 @@ def main():
     logging.info(f"输入文件: {config.RAW_IMAGE_PATH}")
     logging.info(f"输出目录: {os.path.abspath(config.OUTPUT_DIR)}")
     logging.info("="*50)
-    logging.info("⚠ V3.0 重要变更：圆外区域增益=1.0（保留原始数据，不再清零）")
+    logging.info("[重要] V3.0 重要变更：圆外区域增益=1.0（保留原始数据，不再清零）")
     logging.info("  适用于全景拼接场景，保留鱼眼边缘信息供拼接算法使用\n")
 
     # 1.5. 配置验证
@@ -130,7 +130,7 @@ def main():
                     f"Std={val_result['stats']['std']:.3f}")
         if val_result['warnings']:
             for warning in val_result['warnings']:
-                logging.warning(f"  ⚠ {warning}")
+                logging.warning(f"  [警告] {warning}")
 
 
     # 6. 将增益应用到图像
@@ -222,7 +222,7 @@ def main():
     logging.info("所有任务已成功完成！ (V3.0 - 全景拼接优化版)")
     logging.info(f"所有输出文件已保存在目录: {os.path.abspath(config.OUTPUT_DIR)}")
     logging.info("="*50)
-    logging.info("\n💡 提示：圆外区域已保留原始数据（增益=1.0），可直接用于全景拼接")
+    logging.info("\n[提示] 圆外区域已保留原始数据（增益=1.0），可直接用于全景拼接")
 
 
 if __name__ == '__main__':

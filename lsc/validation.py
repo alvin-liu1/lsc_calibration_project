@@ -101,9 +101,9 @@ def validate_config(config_module):
     is_valid = len(errors) == 0
 
     if is_valid:
-        logging.info("✓ 配置验证通过")
+        logging.info("[成功] 配置验证通过")
     else:
-        logging.error("✗ 配置验证失败:")
+        logging.error("[失败] 配置验证失败:")
         for err in errors:
             logging.error(f"  - {err}")
 
