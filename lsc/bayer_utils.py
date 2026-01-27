@@ -20,28 +20,48 @@ def unpack_mipi_raw10(packed_data, width, height):
     返回:
         np.array: 解包后的16-bit Bayer图像
     """
+    # 计算每行的字节数（无padding）
+    bytes_per_row_no_pad = (width * 10) // 8
     total_pixels = width * height
-    expected_bytes = (total_pixels * 10) // 8
+    expected_bytes_no_pad = (total_pixels * 10) // 8
 
-    if len(packed_data) < expected_bytes:
-        raise ValueError(f"MIPI RAW10数据不足: 期望{expected_bytes}字节, 实际{len(packed_data)}字节")
+    # 检测行对齐padding
+    actual_bytes = len(packed_data)
+    bytes_per_row_actual = actual_bytes // height
 
-    # 每5字节解包成4个像素
-    num_groups = total_pixels // 4
+    # 计算padding大小
+    padding_per_row = bytes_per_row_actual - bytes_per_row_no_pad
+
+    if padding_per_row < 0:
+        raise ValueError(f"MIPI RAW10数据不足: 期望至少{expected_bytes_no_pad}字节, 实际{actual_bytes}字节")
+
+    if padding_per_row > 0:
+        logging.info(f"检测到行对齐: 每行{bytes_per_row_actual}字节 (数据{bytes_per_row_no_pad} + padding{padding_per_row})")
+
+    # 逐行解包，跳过每行的padding
     unpacked = np.zeros(total_pixels, dtype=np.uint16)
 
-    for i in range(num_groups):
-        base = i * 5
-        # 读取5字节并转换为int
-        b0, b1, b2, b3, b4 = [int(x) for x in packed_data[base:base+5]]
+    for row in range(height):
+        # 计算当前行在packed_data中的起始位置
+        row_start = row * bytes_per_row_actual
+        row_data = packed_data[row_start:row_start + bytes_per_row_no_pad]
 
-        # 解包4个10-bit像素
-        p0 = ((b0 << 2) | ((b4 >> 0) & 0x03)) & 0x3FF
-        p1 = ((b1 << 2) | ((b4 >> 2) & 0x03)) & 0x3FF
-        p2 = ((b2 << 2) | ((b4 >> 4) & 0x03)) & 0x3FF
-        p3 = ((b3 << 2) | ((b4 >> 6) & 0x03)) & 0x3FF
+        # 解包当前行的所有像素
+        num_groups_per_row = width // 4
+        row_offset = row * width
 
-        unpacked[i*4:(i+1)*4] = [p0, p1, p2, p3]
+        for i in range(num_groups_per_row):
+            base = i * 5
+            # 读取5字节并转换为int
+            b0, b1, b2, b3, b4 = [int(x) for x in row_data[base:base+5]]
+
+            # 解包4个10-bit像素
+            p0 = ((b0 << 2) | ((b4 >> 0) & 0x03)) & 0x3FF
+            p1 = ((b1 << 2) | ((b4 >> 2) & 0x03)) & 0x3FF
+            p2 = ((b2 << 2) | ((b4 >> 4) & 0x03)) & 0x3FF
+            p3 = ((b3 << 2) | ((b4 >> 6) & 0x03)) & 0x3FF
+
+            unpacked[row_offset + i*4:row_offset + (i+1)*4] = [p0, p1, p2, p3]
 
     return unpacked.reshape((height, width))
 
@@ -61,26 +81,46 @@ def unpack_mipi_raw12(packed_data, width, height):
     返回:
         np.array: 解包后的16-bit Bayer图像
     """
+    # 计算每行的字节数（无padding）
+    bytes_per_row_no_pad = (width * 12) // 8
     total_pixels = width * height
-    expected_bytes = (total_pixels * 12) // 8
+    expected_bytes_no_pad = (total_pixels * 12) // 8
 
-    if len(packed_data) < expected_bytes:
-        raise ValueError(f"MIPI RAW12数据不足: 期望{expected_bytes}字节, 实际{len(packed_data)}字节")
+    # 检测行对齐padding
+    actual_bytes = len(packed_data)
+    bytes_per_row_actual = actual_bytes // height
 
-    # 每3字节解包成2个像素
-    num_groups = total_pixels // 2
+    # 计算padding大小
+    padding_per_row = bytes_per_row_actual - bytes_per_row_no_pad
+
+    if padding_per_row < 0:
+        raise ValueError(f"MIPI RAW12数据不足: 期望至少{expected_bytes_no_pad}字节, 实际{actual_bytes}字节")
+
+    if padding_per_row > 0:
+        logging.info(f"检测到行对齐: 每行{bytes_per_row_actual}字节 (数据{bytes_per_row_no_pad} + padding{padding_per_row})")
+
+    # 逐行解包，跳过每行的padding
     unpacked = np.zeros(total_pixels, dtype=np.uint16)
 
-    for i in range(num_groups):
-        base = i * 3
-        # 读取3字节并转换为int
-        b0, b1, b2 = [int(x) for x in packed_data[base:base+3]]
+    for row in range(height):
+        # 计算当前行在packed_data中的起始位置
+        row_start = row * bytes_per_row_actual
+        row_data = packed_data[row_start:row_start + bytes_per_row_no_pad]
 
-        # 解包2个12-bit像素
-        p0 = ((b0 << 4) | ((b2 >> 0) & 0x0F)) & 0xFFF
-        p1 = ((b1 << 4) | ((b2 >> 4) & 0x0F)) & 0xFFF
+        # 解包当前行的所有像素
+        num_groups_per_row = width // 2
+        row_offset = row * width
 
-        unpacked[i*2:(i+1)*2] = [p0, p1]
+        for i in range(num_groups_per_row):
+            base = i * 3
+            # 读取3字节并转换为int
+            b0, b1, b2 = [int(x) for x in row_data[base:base+3]]
+
+            # 解包2个12-bit像素
+            p0 = ((b0 << 4) | ((b2 >> 0) & 0x0F)) & 0xFFF
+            p1 = ((b1 << 4) | ((b2 >> 4) & 0x0F)) & 0xFFF
+
+            unpacked[row_offset + i*2:row_offset + (i+1)*2] = [p0, p1]
 
     return unpacked.reshape((height, width))
 
@@ -151,16 +191,14 @@ def read_raw_bayer_image(raw_path, width, height, bit_depth=10, raw_format='auto
 
         # 根据格式读取数据
         if raw_format == 'mipi_raw10':
-            # MIPI RAW10格式
-            expected_bytes = (width * height * 10) // 8
-            packed_data = np.fromfile(raw_path, dtype=np.uint8, count=expected_bytes)
+            # MIPI RAW10格式 - 读取整个文件（包含可能的行对齐padding）
+            packed_data = np.fromfile(raw_path, dtype=np.uint8)
             bayer_image_16bit = unpack_mipi_raw10(packed_data, width, height)
             logging.info(f"成功读取MIPI RAW10文件: {raw_path}, 尺寸: {width}x{height}")
 
         elif raw_format == 'mipi_raw12':
-            # MIPI RAW12格式
-            expected_bytes = (width * height * 12) // 8
-            packed_data = np.fromfile(raw_path, dtype=np.uint8, count=expected_bytes)
+            # MIPI RAW12格式 - 读取整个文件（包含可能的行对齐padding）
+            packed_data = np.fromfile(raw_path, dtype=np.uint8)
             bayer_image_16bit = unpack_mipi_raw12(packed_data, width, height)
             logging.info(f"成功读取MIPI RAW12文件: {raw_path}, 尺寸: {width}x{height}")
 

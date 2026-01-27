@@ -24,7 +24,8 @@ IMAGE_WIDTH = 2900
 IMAGE_HEIGHT = 2900
 # Bayer 格式: RGGB, BGGR, GBRG, GRBG
 # 请根据 Sensor 规格书确认 (高通通常是 MIPI 顺序)
-BAYER_PATTERN = cv2.COLOR_BayerRG2BGR_VNG
+# 修正: 根据测试结果，此sensor使用GRBG pattern
+BAYER_PATTERN = cv2.COLOR_BayerGR2BGR_VNG  # GRBG pattern
 
 # --- 3. 传感器参数 ---
 # 【关键】请务必填入准确的黑电平 (Black Level)
