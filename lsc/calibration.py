@@ -54,10 +54,13 @@ def dampen_gains_by_geometry(gain_matrix, rows, cols, circle_info, image_w, imag
 
 def fit_radial_gain_table(brightness_grid, rows, cols, circle_info, image_w, image_h, max_gain):
     """
-    【核心算法 V5.1】径向多项式拟合
+    【核心算法 V6.0】改进版径向多项式拟合
     将嘈杂的网格数据拟合成光滑的径向曲线，生成无条纹、无色偏的增益表。
 
-    修复: 降低阶数至 4 并收缩拟合范围至 92%，解决边缘翘起问题。
+    V6.0 改进:
+    - 加权拟合：给高质量数据更大权重，减少噪点影响
+    - 分段拟合：内圈用4阶，外圈用2阶，提升边缘精度
+    - 平滑拼接：避免分段边界的不连续
     """
     cx, cy, radius = circle_info
 
@@ -79,11 +82,9 @@ def fit_radial_gain_table(brightness_grid, rows, cols, circle_info, image_w, ima
     flat_r = norm_r.flatten()
     flat_val = brightness_grid.flatten()
 
-    # [关键优化] 筛选拟合数据
-    # 1. brightness > 0.001: 排除完全死黑的点
-    # 2. flat_r < 0.92: 仅使用圆心到 92% 处的数据。
-    #    排除最边缘 8% 的低信噪比区域，防止噪点导致曲线末端上翘 (Overshoot)。
-    valid_mask = (flat_val > 0.001) & (flat_r < 0.92)
+    # [V6.0 改进] 扩展拟合范围到 98%，使用分段拟合处理边缘
+    # 不再丢弃边缘8%数据，而是用更稳定的方法处理
+    valid_mask = (flat_val > 0.001) & (flat_r < 0.98)
 
     if np.sum(valid_mask) < 10:
         logging.warning("有效拟合点过少，拟合失败，返回全1矩阵")
@@ -95,16 +96,68 @@ def fit_radial_gain_table(brightness_grid, rows, cols, circle_info, image_w, ima
     # 3. 寻找中心最大亮度 (用于计算 Gain = Max / Fit_Val)
     max_brightness = np.max(train_val)
 
-    # 4. 多项式拟合 (Polynomial Fit)
-    try:
-        # [关键优化] 阶数降为 4
-        # 6阶容易过拟合导致边缘震荡，4阶足够描述光衰且更加刚性平滑
-        coeffs = np.polyfit(train_r, train_val, 4)
-        poly_func = np.poly1d(coeffs)
+    # 4. [V6.0 改进] 计算加权系数
+    # 给高质量数据更大权重：中心权重大，边缘权重小；亮点权重大，暗点权重小
+    weights = np.ones_like(train_val)
 
-        # 5. 重建光滑的增益表
-        # 计算所有网格点的拟合亮度 (包括被 mask 掉的边缘)
-        fitted_brightness = poly_func(flat_r).reshape(rows, cols)
+    # 权重1：距离权重（高斯分布，中心权重大）
+    distance_weight = np.exp(-((train_r - 0.5) / 0.35)**2)
+    weights *= distance_weight
+
+    # 权重2：亮度权重（暗点权重降低，因为噪声大）
+    brightness_weight = np.clip(train_val / max_brightness, 0.3, 1.0)
+    weights *= brightness_weight
+
+    logging.info(f"  - 使用加权拟合，权重范围: [{weights.min():.3f}, {weights.max():.3f}]")
+
+    # 5. [V6.0 改进] 分段拟合 + 加权拟合
+    try:
+        # 内圈拟合：0-80%半径，用4阶多项式（精确描述中心区域）
+        inner_mask = train_r < 0.80
+        if np.sum(inner_mask) > 10:
+            coeffs_inner = np.polyfit(train_r[inner_mask], train_val[inner_mask], 4, w=weights[inner_mask])
+            poly_inner = np.poly1d(coeffs_inner)
+        else:
+            # 内圈数据不足，回退到全局拟合
+            coeffs_inner = None
+            poly_inner = None
+
+        # 外圈拟合：70-98%半径，用2阶多项式（稳定处理边缘）
+        outer_mask = (train_r >= 0.70) & (train_r < 0.98)
+        if np.sum(outer_mask) > 10:
+            coeffs_outer = np.polyfit(train_r[outer_mask], train_val[outer_mask], 2, w=weights[outer_mask])
+            poly_outer = np.poly1d(coeffs_outer)
+        else:
+            # 外圈数据不足，回退到全局拟合
+            coeffs_outer = None
+            poly_outer = None
+
+        # 6. 重建光滑的增益表（分段拼接）
+        fitted_brightness = np.zeros_like(flat_r)
+
+        if poly_inner is not None and poly_outer is not None:
+            # 分段拼接模式
+            for i, r in enumerate(flat_r):
+                if r < 0.75:
+                    # 内圈：使用4阶多项式
+                    fitted_brightness[i] = poly_inner(r)
+                elif r > 0.85:
+                    # 外圈：使用2阶多项式
+                    fitted_brightness[i] = poly_outer(r)
+                else:
+                    # 过渡区（75%-85%）：线性混合
+                    blend_weight = (r - 0.75) / 0.10
+                    fitted_brightness[i] = poly_inner(r) * (1 - blend_weight) + poly_outer(r) * blend_weight
+
+            logging.info("  - 使用分段拟合：内圈4阶 + 外圈2阶 + 平滑拼接")
+        else:
+            # 回退到全局4阶拟合
+            coeffs_global = np.polyfit(train_r, train_val, 4, w=weights)
+            poly_global = np.poly1d(coeffs_global)
+            fitted_brightness = poly_global(flat_r)
+            logging.info("  - 使用全局4阶加权拟合（分段数据不足）")
+
+        fitted_brightness = fitted_brightness.reshape(rows, cols)
 
         # 防止分母为0或负数 (曲线拟合到远处可能小于0)
         fitted_brightness = np.maximum(fitted_brightness, 0.001)
