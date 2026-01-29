@@ -17,7 +17,7 @@ OUTPUT_DIR = 'output'
 #   'plain'      - Plain RAW (16-bit容器存储10/12-bit数据)
 #   'mipi_raw10' - MIPI RAW10 (4个10-bit像素打包成5字节)
 #   'mipi_raw12' - MIPI RAW12 (2个12-bit像素打包成3字节)
-RAW_FORMAT = 'auto'
+RAW_FORMAT = 'plain'  # qbchdr.raw是Plain RAW格式
 
 # --- 2. 图像基本属性 ---
 IMAGE_WIDTH = 2900
@@ -25,7 +25,7 @@ IMAGE_HEIGHT = 2900
 # Bayer 格式: RGGB, BGGR, GBRG, GRBG
 # 请根据 Sensor 规格书确认 (高通通常是 MIPI 顺序)
 # 修正: 根据测试结果，此sensor使用GRBG pattern
-BAYER_PATTERN = cv2.COLOR_BayerGR2BGR_VNG  # GRBG pattern
+BAYER_PATTERN = 'GRBG'
 
 # --- 3. 传感器参数 ---
 # 【关键】请务必填入准确的黑电平 (Black Level)
@@ -60,7 +60,7 @@ FALLOFF_FACTOR = 1.0
 # [修改] 最大增益限制
 # 建议设大一点 (如 10.0 ~ 12.0)，让拟合曲线能自然延伸到最暗角。
 # 最终输出时会自动钳位到 HW_MAX_GAIN_FLOAT (7.99)。
-MAX_GAIN = 12.0
+MAX_GAIN = 4.0
 
 # [修改 V3.0 - 全景拼接优化] 径向保护 (Dampening)
 # 重要变更：改为 1.0（从圆边缘开始衰减）
@@ -97,7 +97,7 @@ V3_PRE_SMOOTH_KSIZE = (5, 5)
 # 所以不需要很大的后平滑核，5 或 3 足够消除微小误差。
 V3_POST_SMOOTH_KSIZE = 5
 
-APPLY_SYMMETRY = True  # 强制中心对称 (推荐开启)
+APPLY_SYMMETRY = True
 
 # --- 7. 交互配置 ---
 MASK_FEATHER_PIXELS = 30

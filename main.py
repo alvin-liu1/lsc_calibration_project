@@ -60,9 +60,19 @@ def main():
 
     h, w = original_bayer_16bit.shape
 
+    # 2.5. 转换Bayer Pattern字符串为OpenCV常量
+    bayer_pattern_map = {
+        'RGGB': cv2.COLOR_BayerRG2BGR_VNG,
+        'GRBG': cv2.COLOR_BayerGR2BGR_VNG,
+        'GBRG': cv2.COLOR_BayerGB2BGR_VNG,
+        'BGGR': cv2.COLOR_BayerBG2BGR_VNG
+    }
+    bayer_code = bayer_pattern_map.get(config.BAYER_PATTERN, cv2.COLOR_BayerGR2BGR_VNG)
+    logging.info(f"使用Bayer模式: {config.BAYER_PATTERN} -> {bayer_code}")
+
     # 3. 准备预览图并获取有效区域掩码
     preview_bayer_8bit = (np.clip(original_bayer_16bit, 0, 1023) / 4).astype(np.uint8)
-    preview_rgb_float = cv2.cvtColor(preview_bayer_8bit, config.BAYER_PATTERN).astype(np.float32) / 255.0
+    preview_rgb_float = cv2.cvtColor(preview_bayer_8bit, bayer_code).astype(np.float32) / 255.0
 
     if config.USE_MANUAL_CIRCLE_SELECTION:
         temp_display_img = image_utils.simple_white_balance(preview_rgb_float.copy())
@@ -173,8 +183,8 @@ def main():
     original_bayer_8bit = (np.clip(bayer_blc_float, 0, max_val_after_blc) * (255.0 / max_val_after_blc)).astype(np.uint8)
     compensated_bayer_8bit = (np.clip(compensated_bayer_float, 0, max_val_after_blc) * (255.0 / max_val_after_blc)).astype(np.uint8)
 
-    original_rgb_no_wb = cv2.cvtColor(original_bayer_8bit, config.BAYER_PATTERN).astype(np.float32) / 255.0
-    compensated_rgb_no_wb = cv2.cvtColor(compensated_bayer_8bit, config.BAYER_PATTERN).astype(np.float32) / 255.0
+    original_rgb_no_wb = cv2.cvtColor(original_bayer_8bit, bayer_code).astype(np.float32) / 255.0
+    compensated_rgb_no_wb = cv2.cvtColor(compensated_bayer_8bit, bayer_code).astype(np.float32) / 255.0
 
     mask_3d = np.stack([feathered_mask] * 3, axis=-1)
     original_rgb_no_wb *= mask_3d

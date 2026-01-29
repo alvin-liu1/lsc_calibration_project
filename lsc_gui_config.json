@@ -1,0 +1,13 @@
+{
+  "raw_file": "D:/Code/lsc_calibration_project/input/qbchdr.raw",
+  "width": "2900",
+  "height": "2900",
+  "bit_depth": "10",
+  "raw_format": "mipi_raw10",
+  "bayer_pattern": "GRBG",
+  "grid_rows": "12",
+  "grid_cols": "16",
+  "max_gain": "4.0",
+  "apply_symmetry": true,
+  "output_dir": "output"
+}
