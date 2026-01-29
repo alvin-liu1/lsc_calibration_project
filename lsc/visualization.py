@@ -66,20 +66,44 @@ def get_manual_circle_mask(image_rgb_float, feather_pixels, output_dir, adjust_s
                 'radius': int(loaded_radius_orig * scale)
             }
             preview_img = draw_circle_on_image(display_image_bgr, preview_circle, color=(0, 255, 255), thickness=2)
-            cv2.putText(preview_img, "(R)euse, (E)dit, or (N)ew selection?", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            cv2.putText(preview_img, "Previous selection found:", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            cv2.putText(preview_img, "Press [R] to Reuse", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            cv2.putText(preview_img, "Press [E] to Edit", (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+            cv2.putText(preview_img, "Press [N] for New selection", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
             cv2.imshow(window_name, preview_img)
 
-            # [自动模式] 直接复用上次参数，跳过按键选择
-            logging.info("检测到上次的圆心参数，自动复用（跳过按键选择）")
-            current_circle = preview_circle
-            start_main_loop = False
-            cv2.destroyWindow(window_name)
+            # 等待用户选择
+            logging.info("检测到上次的圆心参数，等待用户选择: [R]复用 / [E]编辑 / [N]新建")
+            while True:
+                key = cv2.waitKey(50) & 0xFF  # 50ms刷新，保持窗口响应
+                if key == ord('r') or key == ord('R'):
+                    logging.info("用户选择: 复用之前的圆心参数")
+                    current_circle = preview_circle
+                    start_main_loop = False
+                    cv2.destroyWindow(window_name)
+                    break
+                elif key == ord('e') or key == ord('E'):
+                    logging.info("用户选择: 编辑之前的圆心参数")
+                    current_circle = preview_circle
+                    start_main_loop = True
+                    break
+                elif key == ord('n') or key == ord('N'):
+                    logging.info("用户选择: 创建新的圆心选择")
+                    current_circle = {'center': None, 'radius': 0}
+                    start_main_loop = True
+                    break
+                # 持续显示预览图像，保持窗口响应
+                cv2.imshow(window_name, preview_img)
         except Exception as e:
             logging.warning(f"加载圆形参数失败: {e}. 将创建新的选择。")
 
     if start_main_loop:
         logging.info("请手动选择圆形有效区域: 左键拖动画圆, 'wasd/zx'微调, 'r'重置, 'q'确认 (或直接关闭窗口)")
+        # 重新显示窗口并刷新
         cv2.imshow(window_name, draw_circle_on_image(display_image_bgr, current_circle))
+        # 多次刷新确保窗口激活
+        for _ in range(5):
+            cv2.waitKey(1)
         while True:
             key = cv2.waitKey(1) & 0xFF
 
@@ -284,3 +308,119 @@ def create_and_save_analysis_plots(image_results, base_filename, output_dir):
 
     logging.info("显示交互式预览窗口... (关闭窗口后程序才会结束)")
     plt.show()
+
+
+def plot_grid_with_gain_brightness(rgb_image, gain_matrix, brightness_map, channel_name, save_path, grid_size=(13, 17)):
+    """
+    在RGB图像上绘制网格，并标注每个网格的增益值和亮度值。
+
+    参数:
+        rgb_image (np.array): RGB图像 (H, W, 3), uint8格式
+        gain_matrix (np.array): 增益矩阵 (grid_rows, grid_cols)
+        brightness_map (np.array): 每个网格的亮度值 (grid_rows, grid_cols)
+        channel_name (str): 通道名称 ('Gr' or 'Gb')
+        save_path (str): 保存路径
+        grid_size (tuple): 网格尺寸 (rows, cols)
+    """
+    # 复制图像避免修改原图
+    img_with_grid = rgb_image.copy()
+    h, w = img_with_grid.shape[:2]
+    grid_rows, grid_cols = grid_size
+
+    # 确保gain_matrix和brightness_map尺寸匹配
+    if gain_matrix.shape != (grid_rows, grid_cols):
+        logging.warning(f"增益矩阵尺寸 {gain_matrix.shape} 与网格尺寸 {grid_size} 不匹配")
+        return
+
+    if brightness_map.shape != (grid_rows, grid_cols):
+        logging.warning(f"亮度图尺寸 {brightness_map.shape} 与网格尺寸 {grid_size} 不匹配")
+        return
+
+    # 计算每个网格的尺寸
+    cell_h = h / grid_rows
+    cell_w = w / grid_cols
+
+    # 绘制网格线
+    for i in range(grid_rows + 1):
+        y = int(i * cell_h)
+        # 确保最后一条横线正好在底边
+        if i == grid_rows:
+            y = h - 1
+        cv2.line(img_with_grid, (0, y), (w - 1, y), (0, 255, 255), 1)  # 黄色横线
+
+    for j in range(grid_cols + 1):
+        x = int(j * cell_w)
+        # 确保最后一条竖线正好在右边
+        if j == grid_cols:
+            x = w - 1
+        cv2.line(img_with_grid, (x, 0), (x, h - 1), (0, 255, 255), 1)  # 黄色竖线
+
+    # 在每个网格中标注增益值和亮度值
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.5  # 增大字体
+    thickness = 1
+
+    grid_num = 1  # 网格编号从1开始
+
+    for i in range(grid_rows):
+        for j in range(grid_cols):
+            # 网格中心位置
+            center_x = int((j + 0.5) * cell_w)
+            center_y = int((i + 0.5) * cell_h)
+
+            # 获取增益值和亮度值
+            gain = gain_matrix[i, j]
+            brightness = brightness_map[i, j]
+
+            # 文本内容
+            text_num = f"#{grid_num}"
+            text_gain = f"G:{gain:.3f}"
+            text_brightness = f"B:{brightness:.0f}"
+
+            grid_num += 1  # 编号递增
+
+            # 计算文本尺寸
+            (text_w0, text_h0), _ = cv2.getTextSize(text_num, font, font_scale, thickness)
+            (text_w1, text_h1), _ = cv2.getTextSize(text_gain, font, font_scale, thickness)
+            (text_w2, text_h2), _ = cv2.getTextSize(text_brightness, font, font_scale, thickness)
+
+            # 文本位置（上中下排列）
+            text_y_num = center_y - text_h1 - 8
+            text_y_gain = center_y
+            text_y_brightness = center_y + text_h1 + 8
+
+            # 绘制半透明背景
+            padding = 3
+            max_width = max(text_w0, text_w1, text_w2)
+            bg_x1 = center_x - max_width // 2 - padding
+            bg_y1 = text_y_num - text_h0 - padding
+            bg_x2 = center_x + max_width // 2 + padding
+            bg_y2 = text_y_brightness + padding
+
+            overlay = img_with_grid.copy()
+            cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.7, img_with_grid, 0.3, 0, img_with_grid)
+
+            # 绘制编号（黄色）
+            cv2.putText(img_with_grid, text_num,
+                       (center_x - text_w0 // 2, text_y_num),
+                       font, font_scale, (0, 255, 255), thickness, cv2.LINE_AA)
+
+            # 绘制增益值（绿色）
+            cv2.putText(img_with_grid, text_gain,
+                       (center_x - text_w1 // 2, text_y_gain),
+                       font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
+
+            # 绘制亮度值（白色）
+            cv2.putText(img_with_grid, text_brightness,
+                       (center_x - text_w2 // 2, text_y_brightness),
+                       font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
+    # 添加标题
+    title = f"{channel_name} Channel - Grid with Gain & Brightness"
+    cv2.putText(img_with_grid, title, (10, 30),
+               cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2, cv2.LINE_AA)
+
+    # 保存图像
+    cv2.imwrite(save_path, img_with_grid)
+    logging.info(f"网格标注图已保存至: {save_path}")

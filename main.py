@@ -97,7 +97,7 @@ def main():
     }
 
     # --- [修复点 2] 修复重复参数和逗号缺失 ---
-    raw_gain_matrices = calibration.calculate_lsc_gains(
+    raw_gain_matrices, raw_brightness_map = calibration.calculate_lsc_gains(
         bayer_channels_float, config.GRID_ROWS, config.GRID_COLS,
         hard_mask,
         config.MIN_PIXELS_PER_GRID, config.VALID_GRID_THRESHOLD_RATIO,
@@ -111,6 +111,11 @@ def main():
 
     # 5. 增益矩阵后处理
     logging.info("步骤4: 对增益矩阵进行后处理（外插平滑、对称化）...")
+
+    # 计算网格顶点数（用于后续边缘衰减）
+    num_v_verts = config.GRID_ROWS + 1
+    num_h_verts = config.GRID_COLS + 1
+
     final_gain_matrices = {}
     for ch, matrix in raw_gain_matrices.items():
         logging.info(f"--- 处理 {ch} 通道增益 ---")
@@ -122,6 +127,17 @@ def main():
         hw_max_gain = 8191.0 / 1024.0
         final_max_gain = min(config.MAX_GAIN, hw_max_gain)
         final_gain_matrices[ch] = np.clip(smoothed_matrix, 1.0, final_max_gain)
+
+        # [关键修复] 后处理完成后，重新应用边缘衰减
+        # 因为平滑和对称化会改变边缘值，需要再次强制衰减
+        final_gain_matrices[ch] = calibration.dampen_gains_by_geometry(
+            final_gain_matrices[ch],
+            num_v_verts, num_h_verts,
+            circle_info, w, h,
+            fisheye_cfg['radius_ratio'],
+            fisheye_cfg['damping_width']
+        )
+        logging.info(f"  - 重新应用边缘衰减 (ratio={fisheye_cfg['radius_ratio']}, width={fisheye_cfg['damping_width']}px)")
 
         # [新增] 验证增益表质量
         val_result = validation.validate_gain_table(final_gain_matrices[ch], ch, 1.0, final_max_gain)
@@ -177,6 +193,29 @@ def main():
          f"{base_filename}_4_final_result_lsc_wb"],
         img_dir
     )
+
+    # 生成带网格标注的最终图像（增益值 + 亮度值）
+    logging.info("生成网格标注图像...")
+
+    # 将raw_brightness_map转换为0-255亮度值（从归一化的float转换）
+    brightness_255_map = {}
+    for ch in ['Gr', 'Gb']:
+        brightness_255_map[ch] = (raw_brightness_map[ch] * 255.0).astype(np.float32)
+
+    # 将最终校正图像转换为uint8 BGR格式用于标注
+    compensated_bgr_uint8 = (np.clip(compensated_rgb_wb, 0, 1) * 255).astype(np.uint8)
+    compensated_bgr_uint8 = cv2.cvtColor(compensated_bgr_uint8, cv2.COLOR_RGB2BGR)
+
+    # 为Gr和Gb通道生成网格标注图
+    for ch in ['Gr', 'Gb']:
+        visualization.plot_grid_with_gain_brightness(
+            compensated_bgr_uint8,  # 使用uint8 BGR格式
+            final_gain_matrices[ch],
+            brightness_255_map[ch],
+            ch,
+            os.path.join(img_dir, f"{base_filename}_4_final_result_lsc_wb_{ch}_grid.png"),
+            grid_size=(config.GRID_ROWS + 1, config.GRID_COLS + 1)  # 顶点数 = 单元格数 + 1
+        )
 
     # 保存高通格式表格
     visualization.save_gain_tables_qcom_format(final_gain_matrices, base_filename, config.OUTPUT_DIR)

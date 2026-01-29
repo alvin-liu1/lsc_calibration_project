@@ -8,7 +8,7 @@ import cv2
 
 # --- 1. 输入与输出配置 ---
 # 请修改为您当前的 RAW 文件路径
-RAW_IMAGE_PATH = 'input/2900mipi.raw'
+RAW_IMAGE_PATH = 'input/qbchdr.raw'
 OUTPUT_DIR = 'output'
 
 # RAW 文件格式配置

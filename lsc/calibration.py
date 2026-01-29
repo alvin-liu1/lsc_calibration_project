@@ -265,4 +265,4 @@ def calculate_lsc_gains(
     raw_gains['Gb'] = avg_green
     logging.info(f"  - 平衡后Gr/Gb差异: 0.0000 (完全一致)")
 
-    return raw_gains
+    return raw_gains, raw_brightness_map  # 同时返回增益和原始亮度图
