@@ -95,16 +95,14 @@ def fit_radial_gain_table(brightness_grid, rows, cols, circle_info, image_w, ima
     # 3. 寻找中心最大亮度 (用于计算 Gain = Max / Fit_Val)
     max_brightness = np.max(train_val)
 
-    # 4. [V7.0] 权重：均匀距离权重 + 亮度权重
-    # 原来的高斯权重(中心r=0.5)会压低边缘数据权重，导致边缘拟合误差大
-    # 改为统一权重：边缘和中心同等重要
-    weights = np.ones_like(train_val)
-
-    # 亮度权重（暗点噪声大，权重降低）
+    # 4. [V8.0] 边缘加权 + 亮度权重
+    # 鱼眼最大暗角在边缘，边缘数据准确拟合更重要
+    # 用线性递增权重：中心0.4，边缘1.0，边缘比中心重要2.5x
+    distance_weight = 0.4 + 0.6 * train_r
     brightness_weight = np.clip(train_val / max_brightness, 0.3, 1.0)
-    weights *= brightness_weight
+    weights = distance_weight * brightness_weight
 
-    logging.info(f"  - 使用均匀距离权重，亮度权重范围: [{weights.min():.3f}, {weights.max():.3f}]")
+    logging.info(f"  - 边缘加权拟合，权重范围: [{weights.min():.3f}, {weights.max():.3f}]")
 
     # 5. 分段拟合（内圈4阶 + 外圈2阶，外圈范围扩展到 99.5%）
     try:
@@ -164,6 +162,53 @@ def fit_radial_gain_table(brightness_grid, rows, cols, circle_info, image_w, ima
     return smooth_gain_grid
 
 
+def cos4_compensation(radius_map, strength=0.3):
+    """
+    cos⁴ 光学暗角预补偿。
+
+    真实鱼眼镜头暗角近似遵循 cos⁴(θ) 规律，先做理论预补偿可以降低多项式拟合的难度
+    （只需拟合残差，而不是整条陡峭曲线），边缘拟合精度更高。
+
+    strength 控制预补偿强度 (0=不补偿, 1=完全cos⁴补偿):
+    - 设为 0.3 而非 1.0，避免在 r→1 时 cos⁴ → ∞ 的数值问题
+    - 对于 r=0.9: cos²(81°) ≈ 1/42 → gain^0.3 ≈ 2.5，合理
+    """
+    theta = np.clip(radius_map, 0, 0.98) * (np.pi / 2.0)
+    cos4 = np.cos(theta) ** 4
+    gain = (1.0 / (cos4 + 1e-6)) ** strength
+    # 安全上限：鱼眼实际最大暗角通常不超过 8x，预补偿不应超出此范围
+    gain = np.clip(gain, 1.0, 8.0)
+    return gain.astype(np.float32)
+
+
+def residual_2d_correction(brightness_map, gain_radial, valid_mask):
+    """
+    2D 残差校正：修正径向拟合未能捕捉到的非对称/非径向不均匀性。
+
+    在径向校正后，计算校正图与目标亮度（有效区域均值）的偏差，
+    生成平滑的 2D 补偿因子。
+    """
+    corrected = brightness_map * gain_radial
+
+    valid_vals = corrected[valid_mask]
+    if valid_vals.size < 5:
+        return np.ones_like(gain_radial, dtype=np.float32)
+
+    target = np.mean(valid_vals)
+
+    residual = np.ones_like(corrected, dtype=np.float32)
+    residual[valid_mask] = target / (corrected[valid_mask] + 1e-6)
+
+    # 平滑：(5,5) 核在 13×17 矩阵上等效于全局平滑，避免过拟合噪声
+    residual = cv2.GaussianBlur(residual, (5, 5), 0)
+
+    # 限制修正幅度（避免极端值破坏增益表）
+    residual = np.clip(residual, 0.7, 1.5)
+
+    logging.info(f"  - 2D残差校正范围: [{residual.min():.4f}, {residual.max():.4f}]")
+    return residual
+
+
 def fit_ratio_smooth(ratio_map, rows, cols, circle_info, image_w, image_h):
     """
     对色度比值图 (如 R/G, B/G) 拟合光滑的二阶径向曲线。
@@ -192,8 +237,9 @@ def fit_ratio_smooth(ratio_map, rows, cols, circle_info, image_w, image_h):
     train_val = flat_val[valid_mask]
 
     try:
-        # 二阶多项式：色度变化通常较平滑，低阶防止过拟合
-        coeffs = np.polyfit(train_r, train_val, 2)
+        # [V8.0] 三阶多项式 + 边缘加权（chroma 在边缘变化更明显）
+        weights = 0.5 + 0.5 * train_r
+        coeffs = np.polyfit(train_r, train_val, 3, w=weights)
         poly = np.poly1d(coeffs)
         fitted_vals = poly(flat_r).reshape(rows, cols)
         fitted_vals = np.maximum(fitted_vals, 0.01)
@@ -292,56 +338,76 @@ def calculate_lsc_gains(
     # 取硬件限制和用户设置的较小值
     final_limit = min(max_gain, hw_max)
 
-    # --- [核心算法 V7.0] Luma + Chroma 分离拟合 ---
-    # 原理：
-    #   独立拟合各通道会因 max_X 不同而导致通道间比例失控（RGB ratio shift → 偏色）
-    #   改为：先用 Luma(亮度) 统一校正暗角，再用 Chroma(色度比值) 微调色差
-    #   结果：所有通道中心增益=1.0，边缘R/G和B/G比例保持不变 → 无色偏
+    # --- [核心算法 V8.0] Luma + Chroma + cos⁴预补偿 + 2D残差校正 ---
+    # 升级点：
+    #   V7.0: Luma+Chroma 分离（已解决偏色）
+    #   V8.0: + cos⁴预补偿（降低边缘拟合难度）+ 2D残差（修正非径向不均匀性）
 
     # Step 1: 计算 Luma 图 (四通道均值) 和绿色参考图
     luma_map = (raw_brightness_map['R'] + raw_brightness_map['Gr'] +
                 raw_brightness_map['Gb'] + raw_brightness_map['B']) / 4.0
     green_map = (raw_brightness_map['Gr'] + raw_brightness_map['Gb']) / 2.0
 
-    # Step 2: 对 Luma 做径向拟合 → 统一亮度增益 (Gr/Gb 共用此增益)
-    logging.info("  拟合 Luma 通道曲线（用于 Gr, Gb 增益）...")
-    gain_luma = fit_radial_gain_table(
-        luma_map, num_v_verts, num_h_verts,
+    # Step 2: 生成归一化半径图
+    radius_map = generate_radius_map(num_v_verts, num_h_verts,
+                                     circle_info, image_width, image_height)
+
+    # Step 3: cos⁴ 预补偿
+    # 鱼眼暗角近似遵循 cos⁴(θ)。先做理论预补偿（strength=0.3，保守值）
+    # 使多项式只需拟合残差，避免在陡峭曲线末端出现拟合偏差
+    logging.info("  应用 cos⁴ 光学模型预补偿 (strength=0.3)...")
+    cos4_gain = cos4_compensation(radius_map, strength=0.3)
+    luma_precomp = luma_map * cos4_gain  # 亮度预补偿后应更平坦，更易拟合
+
+    # Step 4: 对预补偿后的 Luma 做径向拟合
+    logging.info("  拟合 Luma 通道曲线（cos⁴预补偿后）...")
+    gain_luma_radial = fit_radial_gain_table(
+        luma_precomp, num_v_verts, num_h_verts,
         circle_info, image_width, image_height, final_limit
     )
 
-    # Step 3: 计算 R/G 和 B/G 色度比值图，拟合色度校正
+    # Step 5: 2D 残差校正（修正径向模型未能捕捉到的非对称不均匀性）
+    # 在原始 luma（未预补偿）上计算残差，确保最终校正基于实测数据
+    luma_valid_mask = (raw_valid_masks['R'] & raw_valid_masks['Gr'] &
+                       raw_valid_masks['Gb'] & raw_valid_masks['B'])
+    logging.info("  计算 2D 残差校正（修正非径向不均匀性）...")
+    residual_2d = residual_2d_correction(luma_map, gain_luma_radial, luma_valid_mask)
+
+    # 最终 Luma 增益 = 径向增益 × 2D残差
+    gain_luma = gain_luma_radial * residual_2d
+
+    # Step 6: 计算 R/G 和 B/G 色度比值图，拟合色度校正
     eps = 1e-6
     r_g_ratio = raw_brightness_map['R'] / (green_map + eps)
     b_g_ratio = raw_brightness_map['B'] / (green_map + eps)
 
-    logging.info("  拟合 R/G 色度比值曲线...")
+    logging.info("  拟合 R/G 色度比值曲线（边缘加权3阶）...")
     fitted_r_g = fit_ratio_smooth(r_g_ratio, num_v_verts, num_h_verts,
                                    circle_info, image_width, image_height)
-    logging.info("  拟合 B/G 色度比值曲线...")
+    logging.info("  拟合 B/G 色度比值曲线（边缘加权3阶）...")
     fitted_b_g = fit_ratio_smooth(b_g_ratio, num_v_verts, num_h_verts,
                                    circle_info, image_width, image_height)
 
-    # Step 4: 以圆心处色度比值为参考（保持中心白平衡不变）
+    # Step 7: 以圆心处色度比值为参考（保持中心白平衡不变）
     cy_idx = num_v_verts // 2
     cx_idx = num_h_verts // 2
     center_r_g = float(fitted_r_g[cy_idx, cx_idx])
     center_b_g = float(fitted_b_g[cy_idx, cx_idx])
     logging.info(f"  圆心色度比值: R/G={center_r_g:.4f}, B/G={center_b_g:.4f}")
 
-    # Step 5: 色度校正系数（圆心=1.0，边缘按实际偏差补偿）
+    # Step 8: 色度校正系数（圆心=1.0，边缘按实际偏差补偿）
     chroma_R = center_r_g / (fitted_r_g + eps)
     chroma_B = center_b_g / (fitted_b_g + eps)
     logging.info(f"  R色度校正范围: [{chroma_R.min():.4f}, {chroma_R.max():.4f}]")
     logging.info(f"  B色度校正范围: [{chroma_B.min():.4f}, {chroma_B.max():.4f}]")
 
-    # Step 6: 组合最终增益 = Luma × Chroma
+    # Step 9: 组合最终增益 = Luma × Chroma
     raw_gains['R']  = gain_luma * chroma_R
     raw_gains['Gr'] = gain_luma.copy()
     raw_gains['Gb'] = gain_luma.copy()
     raw_gains['B']  = gain_luma * chroma_B
 
-    # Step 7: 边缘衰减 + 硬件钳位
+    # Step 10: 边缘衰减 + 硬件钳位
     for ch_name in ['R', 'Gr', 'Gb', 'B']:
         damped_gain = dampen_gains_by_geometry(
             raw_gains[ch_name], num_v_verts, num_h_verts,
