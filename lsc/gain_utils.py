@@ -13,20 +13,17 @@ except ImportError:
     logging.warning("请运行 'pip install scipy' 来安装。")
 
 
-def extrapolate_and_smooth_gains(gain_matrix, gaussian_ksize=5):
+def extrapolate_and_smooth_gains(gain_matrix, gaussian_ksize=5, valid_mask=None):
     """
     通过先外插再平滑的方式，智能地处理增益矩阵。
-    此方法可以有效填充因亮度过低而产生的无效网格(值为1.0)，避免在平滑时污染有效区域。
 
     参数:
-        gain_matrix (np.array): 原始LSC增益矩阵，其中无效区域的值为1.0。
+        gain_matrix (np.array): 原始LSC增益矩阵。
         gaussian_ksize (int): 高斯模糊的核大小，必须是奇数。
-
-    返回:
-        np.array: 经过外插和平滑处理后的高质量增益矩阵。
+        valid_mask (np.array, optional): 布尔掩码，True 表示该顶点有真实像素数据。
+            提供时直接用于区分有效/无效区域，比依赖 gain==1.0 的启发式判断更准确。
     """
     if not SCIPY_AVAILABLE:
-        # 如果scipy不可用，则执行简单的高斯模糊
         logging.warning("回退到标准高斯平滑。")
         if gaussian_ksize % 2 == 0: gaussian_ksize += 1
         return cv2.GaussianBlur(gain_matrix.astype(np.float32), (gaussian_ksize, gaussian_ksize), 0)
@@ -36,8 +33,13 @@ def extrapolate_and_smooth_gains(gain_matrix, gaussian_ksize=5):
 
     filled_matrix = gain_matrix.astype(np.float32)
 
-    # 制作一个掩码，标记出无效区域（值为1.0）
-    invalid_mask = (np.abs(gain_matrix - 1.0) < 1e-6)
+    # Fix 2: 优先使用传入的显式掩码；若未提供，回退到 gain==1.0 的启发式方法
+    if valid_mask is not None:
+        invalid_mask = ~valid_mask
+        logging.info("  - 使用显式有效掩码识别无效区域（更准确）。")
+    else:
+        invalid_mask = (np.abs(gain_matrix - 1.0) < 1e-6)
+        logging.info("  - 未提供有效掩码，回退到 gain≈1.0 启发式识别。")
 
     if not np.any(invalid_mask):
         logging.info("  - 未检测到无效区域，执行标准高斯平滑。")

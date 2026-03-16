@@ -96,7 +96,7 @@ def main():
     # 4. 核心计算流程
     logging.info("步骤1: 提取Bayer通道, 进行黑电平校正和归一化...")
     bayer_channels_float = bayer_utils.extract_bayer_channels(
-        original_bayer_16bit, config.BAYER_PATTERN, config.BLACK_LEVELS, config.SENSOR_MAX_VALUE
+        original_bayer_16bit, bayer_code, config.BLACK_LEVELS, config.SENSOR_MAX_VALUE
     )
 
     # --- [修复点 1] 补全被漏掉的 fisheye_cfg 定义 ---
@@ -106,8 +106,7 @@ def main():
         'hw_max_gain': getattr(config, 'HW_MAX_GAIN_FLOAT', 7.99)
     }
 
-    # --- [修复点 2] 修复重复参数和逗号缺失 ---
-    raw_gain_matrices, raw_brightness_map = calibration.calculate_lsc_gains(
+    raw_gain_matrices, raw_brightness_map, raw_valid_masks = calibration.calculate_lsc_gains(
         bayer_channels_float, config.GRID_ROWS, config.GRID_COLS,
         hard_mask,
         config.MIN_PIXELS_PER_GRID, config.VALID_GRID_THRESHOLD_RATIO,
@@ -116,7 +115,7 @@ def main():
         image_width=w,
         image_height=h,
         fisheye_config=fisheye_cfg,
-        smooth_kernel_size=config.V3_PRE_SMOOTH_KSIZE  # 这里修复了
+        smooth_kernel_size=config.V3_PRE_SMOOTH_KSIZE
     )
 
     # 5. 增益矩阵后处理
@@ -129,7 +128,11 @@ def main():
     final_gain_matrices = {}
     for ch, matrix in raw_gain_matrices.items():
         logging.info(f"--- 处理 {ch} 通道增益 ---")
-        smoothed_matrix = gain_utils.extrapolate_and_smooth_gains(matrix, config.V3_POST_SMOOTH_KSIZE)
+        # 传入显式有效掩码，避免把中心增益=1.0误判为无效区域
+        smoothed_matrix = gain_utils.extrapolate_and_smooth_gains(
+            matrix, config.V3_POST_SMOOTH_KSIZE,
+            valid_mask=raw_valid_masks.get(ch)
+        )
         if config.APPLY_SYMMETRY:
             smoothed_matrix = gain_utils.symmetrize_table(smoothed_matrix)
 
@@ -173,7 +176,7 @@ def main():
 
     # [V3.0 变更] 不再传入 hard_mask（圆外增益已在增益表中设为1.0）
     compensated_bayer_float = bayer_utils.apply_gains_to_bayer(
-        bayer_blc_float, full_size_gains, config.BAYER_PATTERN
+        bayer_blc_float, full_size_gains, bayer_code
     )
 
     # 7. 生成并保存最终结果

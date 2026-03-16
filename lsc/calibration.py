@@ -104,7 +104,7 @@ def fit_radial_gain_table(brightness_grid, rows, cols, circle_info, image_w, ima
     distance_weight = np.exp(-((train_r - 0.5) / 0.35)**2)
     weights *= distance_weight
 
-    # 权重2：亮度权重（暗点权重降低，因为噪声大）
+    # 权重2：亮度权重（暗点权重降低，因为噪声大；始终用本通道自身最大值做权重归一化）
     brightness_weight = np.clip(train_val / max_brightness, 0.3, 1.0)
     weights *= brightness_weight
 
@@ -201,8 +201,17 @@ def calculate_lsc_gains(
     logging.info(f"步骤2: 统计单元格亮度 (Grid: {grid_rows}x{grid_cols})...")
 
     # 1. 原始数据统计 (Raw Statistics)
-    # 先算出粗糙的网格亮度图，包含噪点和条纹，但这只是中间数据
     raw_brightness_map = {}
+    raw_valid_masks = {}    # Fix 2: 记录真正有像素数据的单元格
+
+    # Fix 1: 解析预平滑核大小
+    if hasattr(smooth_kernel_size, '__len__'):
+        kh, kw = int(smooth_kernel_size[0]), int(smooth_kernel_size[1])
+    else:
+        kh = kw = int(smooth_kernel_size)
+    kh = kh if kh % 2 == 1 else kh + 1
+    kw = kw if kw % 2 == 1 else kw + 1
+    do_presmooth = (kh > 1 or kw > 1)
 
     for ch in ['R', 'Gr', 'Gb', 'B']:
         cell_map = np.zeros((grid_rows, grid_cols), dtype=np.float32)
@@ -219,10 +228,26 @@ def calculate_lsc_gains(
                 if valid_vals.size > min_pixels_per_grid:
                     cell_map[r, c] = np.mean(valid_vals)
 
-        # 简单插值到顶点尺寸 (NxM -> N+1 x M+1)
-        # 这里用最近邻或线性都行，因为后面会做强大的径向拟合重建整个表面
+        # Fix 2: 在平滑前记录原始有效掩码（cell_map > 0 表示有真实数据）
+        valid_cell_mask = cell_map > 0
+
+        # Fix 1: 预平滑（仅对有效单元格区域），减少测量噪声再拟合
+        if do_presmooth and np.any(valid_cell_mask):
+            valid_vals_mean = cell_map[valid_cell_mask].mean()
+            cell_filled = cell_map.copy()
+            cell_filled[~valid_cell_mask] = valid_vals_mean   # 临时填充无效单元格
+            cell_smoothed = cv2.GaussianBlur(cell_filled, (kw, kh), 0)
+            cell_map[valid_cell_mask] = cell_smoothed[valid_cell_mask]  # 只更新有效区域
+
+        # 插值到顶点尺寸 (NxM -> N+1 x M+1)
         vertex_map = cv2.resize(cell_map, (num_h_verts, num_v_verts), interpolation=cv2.INTER_LINEAR)
         raw_brightness_map[ch] = vertex_map
+
+        # Fix 2: 同步将有效掩码缩放到顶点尺寸
+        vertex_valid = cv2.resize(valid_cell_mask.astype(np.float32),
+                                  (num_h_verts, num_v_verts),
+                                  interpolation=cv2.INTER_LINEAR) > 0.5
+        raw_valid_masks[ch] = vertex_valid
 
     # 2. [核心] 执行径向拟合，生成光滑 Gain Table
     logging.info("步骤3: 执行径向多项式拟合 (消除条纹与色偏)...")
@@ -265,4 +290,4 @@ def calculate_lsc_gains(
     raw_gains['Gb'] = avg_green
     logging.info(f"  - 平衡后Gr/Gb差异: 0.0000 (完全一致)")
 
-    return raw_gains, raw_brightness_map  # 同时返回增益和原始亮度图
+    return raw_gains, raw_brightness_map, raw_valid_masks
