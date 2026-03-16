@@ -72,7 +72,9 @@ def main():
 
     # 3. 准备预览图并获取有效区域掩码
     preview_bayer_8bit = (np.clip(original_bayer_16bit, 0, 1023) / 4).astype(np.uint8)
-    preview_rgb_float = cv2.cvtColor(preview_bayer_8bit, bayer_code).astype(np.float32) / 255.0
+    preview_rgb_float = cv2.cvtColor(
+        cv2.cvtColor(preview_bayer_8bit, bayer_code), cv2.COLOR_BGR2RGB
+    ).astype(np.float32) / 255.0
 
     if config.USE_MANUAL_CIRCLE_SELECTION:
         temp_display_img = image_utils.simple_white_balance(preview_rgb_float.copy())
@@ -186,8 +188,12 @@ def main():
     original_bayer_8bit = (np.clip(bayer_blc_float, 0, max_val_after_blc) * (255.0 / max_val_after_blc)).astype(np.uint8)
     compensated_bayer_8bit = (np.clip(compensated_bayer_float, 0, max_val_after_blc) * (255.0 / max_val_after_blc)).astype(np.uint8)
 
-    original_rgb_no_wb = cv2.cvtColor(original_bayer_8bit, bayer_code).astype(np.float32) / 255.0
-    compensated_rgb_no_wb = cv2.cvtColor(compensated_bayer_8bit, bayer_code).astype(np.float32) / 255.0
+    original_rgb_no_wb = cv2.cvtColor(
+        cv2.cvtColor(original_bayer_8bit, bayer_code), cv2.COLOR_BGR2RGB
+    ).astype(np.float32) / 255.0
+    compensated_rgb_no_wb = cv2.cvtColor(
+        cv2.cvtColor(compensated_bayer_8bit, bayer_code), cv2.COLOR_BGR2RGB
+    ).astype(np.float32) / 255.0
 
     mask_3d = np.stack([feathered_mask] * 3, axis=-1)
     original_rgb_no_wb *= mask_3d
@@ -216,8 +222,9 @@ def main():
         brightness_255_map[ch] = (raw_brightness_map[ch] * 255.0).astype(np.float32)
 
     # 将最终校正图像转换为uint8 BGR格式用于标注
-    compensated_bgr_uint8 = (np.clip(compensated_rgb_wb, 0, 1) * 255).astype(np.uint8)
-    compensated_bgr_uint8 = cv2.cvtColor(compensated_bgr_uint8, cv2.COLOR_RGB2BGR)
+    compensated_bgr_uint8 = cv2.cvtColor(
+        (np.clip(compensated_rgb_wb, 0, 1) * 255).astype(np.uint8), cv2.COLOR_RGB2BGR
+    )
 
     # 为Gr和Gb通道生成网格标注图
     for ch in ['Gr', 'Gb']:
