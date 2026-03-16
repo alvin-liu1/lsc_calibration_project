@@ -82,9 +82,8 @@ def fit_radial_gain_table(brightness_grid, rows, cols, circle_info, image_w, ima
     flat_r = norm_r.flatten()
     flat_val = brightness_grid.flatten()
 
-    # [V6.0 改进] 扩展拟合范围到 98%，使用分段拟合处理边缘
-    # 不再丢弃边缘8%数据，而是用更稳定的方法处理
-    valid_mask = (flat_val > 0.001) & (flat_r < 0.98)
+    # [V7.0] 拟合范围扩展到 99.5%，纳入鱼眼边缘全部暗角数据
+    valid_mask = (flat_val > 0.001) & (flat_r < 0.995)
 
     if np.sum(valid_mask) < 10:
         logging.warning("有效拟合点过少，拟合失败，返回全1矩阵")
@@ -96,21 +95,18 @@ def fit_radial_gain_table(brightness_grid, rows, cols, circle_info, image_w, ima
     # 3. 寻找中心最大亮度 (用于计算 Gain = Max / Fit_Val)
     max_brightness = np.max(train_val)
 
-    # 4. [V6.0 改进] 计算加权系数
-    # 给高质量数据更大权重：中心权重大，边缘权重小；亮点权重大，暗点权重小
+    # 4. [V7.0] 权重：均匀距离权重 + 亮度权重
+    # 原来的高斯权重(中心r=0.5)会压低边缘数据权重，导致边缘拟合误差大
+    # 改为统一权重：边缘和中心同等重要
     weights = np.ones_like(train_val)
 
-    # 权重1：距离权重（高斯分布，中心权重大）
-    distance_weight = np.exp(-((train_r - 0.5) / 0.35)**2)
-    weights *= distance_weight
-
-    # 权重2：亮度权重（暗点权重降低，因为噪声大；始终用本通道自身最大值做权重归一化）
+    # 亮度权重（暗点噪声大，权重降低）
     brightness_weight = np.clip(train_val / max_brightness, 0.3, 1.0)
     weights *= brightness_weight
 
-    logging.info(f"  - 使用加权拟合，权重范围: [{weights.min():.3f}, {weights.max():.3f}]")
+    logging.info(f"  - 使用均匀距离权重，亮度权重范围: [{weights.min():.3f}, {weights.max():.3f}]")
 
-    # 5. [V6.0 改进] 分段拟合 + 加权拟合
+    # 5. 分段拟合（内圈4阶 + 外圈2阶，外圈范围扩展到 99.5%）
     try:
         # 内圈拟合：0-80%半径，用4阶多项式（精确描述中心区域）
         inner_mask = train_r < 0.80
@@ -118,18 +114,14 @@ def fit_radial_gain_table(brightness_grid, rows, cols, circle_info, image_w, ima
             coeffs_inner = np.polyfit(train_r[inner_mask], train_val[inner_mask], 4, w=weights[inner_mask])
             poly_inner = np.poly1d(coeffs_inner)
         else:
-            # 内圈数据不足，回退到全局拟合
-            coeffs_inner = None
             poly_inner = None
 
-        # 外圈拟合：70-98%半径，用2阶多项式（稳定处理边缘）
-        outer_mask = (train_r >= 0.70) & (train_r < 0.98)
+        # 外圈拟合：70-99.5%半径，用2阶多项式（稳定处理边缘）
+        outer_mask = (train_r >= 0.70) & (train_r < 0.995)
         if np.sum(outer_mask) > 10:
             coeffs_outer = np.polyfit(train_r[outer_mask], train_val[outer_mask], 2, w=weights[outer_mask])
             poly_outer = np.poly1d(coeffs_outer)
         else:
-            # 外圈数据不足，回退到全局拟合
-            coeffs_outer = None
             poly_outer = None
 
         # 6. 重建光滑的增益表（分段拼接）
@@ -170,6 +162,46 @@ def fit_radial_gain_table(brightness_grid, rows, cols, circle_info, image_w, ima
         smooth_gain_grid = max_brightness / np.maximum(brightness_grid, 0.001)
 
     return smooth_gain_grid
+
+
+def fit_ratio_smooth(ratio_map, rows, cols, circle_info, image_w, image_h):
+    """
+    对色度比值图 (如 R/G, B/G) 拟合光滑的二阶径向曲线。
+    返回拟合后的比值，而非增益。用于 Luma+Chroma LSC 中的色度校正。
+    """
+    cx, cy, radius = circle_info
+
+    step_h = image_h / (rows - 1)
+    step_w = image_w / (cols - 1)
+    y_idx, x_idx = np.indices((rows, cols))
+    px_x = x_idx * step_w
+    px_y = y_idx * step_h
+    r_dist = np.sqrt((px_x - cx)**2 + (px_y - cy)**2)
+    norm_r = r_dist / radius
+
+    flat_r = norm_r.flatten()
+    flat_val = ratio_map.flatten()
+
+    valid_mask = (flat_val > 0.01) & (flat_r < 0.98)
+
+    if np.sum(valid_mask) < 10:
+        logging.warning("色度比值拟合数据不足，返回原始比值图")
+        return ratio_map.copy()
+
+    train_r = flat_r[valid_mask]
+    train_val = flat_val[valid_mask]
+
+    try:
+        # 二阶多项式：色度变化通常较平滑，低阶防止过拟合
+        coeffs = np.polyfit(train_r, train_val, 2)
+        poly = np.poly1d(coeffs)
+        fitted_vals = poly(flat_r).reshape(rows, cols)
+        fitted_vals = np.maximum(fitted_vals, 0.01)
+        logging.info(f"  - 色度比值拟合范围: [{fitted_vals.min():.4f}, {fitted_vals.max():.4f}]")
+        return fitted_vals.astype(np.float32)
+    except Exception as e:
+        logging.warning(f"色度比值拟合失败: {e}，返回原始比值图")
+        return ratio_map.copy()
 
 
 def calculate_lsc_gains(
@@ -250,7 +282,7 @@ def calculate_lsc_gains(
         raw_valid_masks[ch] = vertex_valid
 
     # 2. [核心] 执行径向拟合，生成光滑 Gain Table
-    logging.info("步骤3: 执行径向多项式拟合 (消除条纹与色偏)...")
+    logging.info("步骤3: 执行 Luma+Chroma 径向拟合 (分离亮度与色度，消除色偏)...")
 
     raw_gains = {}
     damp_ratio = fisheye_config.get('radius_ratio', 1.05)
@@ -260,25 +292,62 @@ def calculate_lsc_gains(
     # 取硬件限制和用户设置的较小值
     final_limit = min(max_gain, hw_max)
 
+    # --- [核心算法 V7.0] Luma + Chroma 分离拟合 ---
+    # 原理：
+    #   独立拟合各通道会因 max_X 不同而导致通道间比例失控（RGB ratio shift → 偏色）
+    #   改为：先用 Luma(亮度) 统一校正暗角，再用 Chroma(色度比值) 微调色差
+    #   结果：所有通道中心增益=1.0，边缘R/G和B/G比例保持不变 → 无色偏
+
+    # Step 1: 计算 Luma 图 (四通道均值) 和绿色参考图
+    luma_map = (raw_brightness_map['R'] + raw_brightness_map['Gr'] +
+                raw_brightness_map['Gb'] + raw_brightness_map['B']) / 4.0
+    green_map = (raw_brightness_map['Gr'] + raw_brightness_map['Gb']) / 2.0
+
+    # Step 2: 对 Luma 做径向拟合 → 统一亮度增益 (Gr/Gb 共用此增益)
+    logging.info("  拟合 Luma 通道曲线（用于 Gr, Gb 增益）...")
+    gain_luma = fit_radial_gain_table(
+        luma_map, num_v_verts, num_h_verts,
+        circle_info, image_width, image_height, final_limit
+    )
+
+    # Step 3: 计算 R/G 和 B/G 色度比值图，拟合色度校正
+    eps = 1e-6
+    r_g_ratio = raw_brightness_map['R'] / (green_map + eps)
+    b_g_ratio = raw_brightness_map['B'] / (green_map + eps)
+
+    logging.info("  拟合 R/G 色度比值曲线...")
+    fitted_r_g = fit_ratio_smooth(r_g_ratio, num_v_verts, num_h_verts,
+                                   circle_info, image_width, image_height)
+    logging.info("  拟合 B/G 色度比值曲线...")
+    fitted_b_g = fit_ratio_smooth(b_g_ratio, num_v_verts, num_h_verts,
+                                   circle_info, image_width, image_height)
+
+    # Step 4: 以圆心处色度比值为参考（保持中心白平衡不变）
+    cy_idx = num_v_verts // 2
+    cx_idx = num_h_verts // 2
+    center_r_g = float(fitted_r_g[cy_idx, cx_idx])
+    center_b_g = float(fitted_b_g[cy_idx, cx_idx])
+    logging.info(f"  圆心色度比值: R/G={center_r_g:.4f}, B/G={center_b_g:.4f}")
+
+    # Step 5: 色度校正系数（圆心=1.0，边缘按实际偏差补偿）
+    chroma_R = center_r_g / (fitted_r_g + eps)
+    chroma_B = center_b_g / (fitted_b_g + eps)
+    logging.info(f"  R色度校正范围: [{chroma_R.min():.4f}, {chroma_R.max():.4f}]")
+    logging.info(f"  B色度校正范围: [{chroma_B.min():.4f}, {chroma_B.max():.4f}]")
+
+    # Step 6: 组合最终增益 = Luma × Chroma
+    raw_gains['R']  = gain_luma * chroma_R
+    raw_gains['Gr'] = gain_luma.copy()
+    raw_gains['Gb'] = gain_luma.copy()
+    raw_gains['B']  = gain_luma * chroma_B
+
+    # Step 7: 边缘衰减 + 硬件钳位
     for ch_name in ['R', 'Gr', 'Gb', 'B']:
-        logging.info(f"  - 拟合 {ch_name} 通道曲线...")
-
-        # 调用拟合函数，直接得到光滑的增益表
-        fitted_gain = fit_radial_gain_table(
-            raw_brightness_map[ch_name],
-            num_v_verts, num_h_verts,
-            circle_info, image_width, image_height,
-            final_limit
-        )
-
-        # 3. 径向衰减 (Dampening)
-        # 仅在最边缘死黑区生效，防止 Bicubic 插值溢出
         damped_gain = dampen_gains_by_geometry(
-            fitted_gain, num_v_verts, num_h_verts,
+            raw_gains[ch_name], num_v_verts, num_h_verts,
             circle_info, image_width, image_height,
             damp_ratio, damp_width
         )
-
         raw_gains[ch_name] = np.clip(damped_gain, 1.0, final_limit).astype(np.float32)
 
     # [高通ISP最佳实践] Gr/Gb通道平衡，避免Demosaic迷宫纹理
@@ -291,3 +360,269 @@ def calculate_lsc_gains(
     logging.info(f"  - 平衡后Gr/Gb差异: 0.0000 (完全一致)")
 
     return raw_gains, raw_brightness_map, raw_valid_masks
+
+
+def generate_radius_map(rows, cols, circle_info, image_w, image_h):
+    """
+    生成归一化半径图 (0.0 ~ 1.0)
+
+    参数:
+        rows, cols: 网格行数和列数
+        circle_info: (cx, cy, r) 圆心坐标和半径
+        image_w, image_h: 图像宽度和高度
+
+    返回:
+        radius_map: 归一化半径图，形状为 (rows, cols)
+    """
+    cx, cy, r = circle_info
+
+    step_h = image_h / (rows - 1)
+    step_w = image_w / (cols - 1)
+
+    y, x = np.indices((rows, cols))
+
+    px = x * step_w
+    py = y * step_h
+
+    dist = np.sqrt((px - cx)**2 + (py - cy)**2)
+
+    r_norm = dist / r
+
+    return r_norm
+
+
+def cos4_gain(radius_map, strength=1.0):
+    """
+    cos⁴光学模型补偿
+
+    参数:
+        radius_map: 归一化半径图 (0.0 ~ 1.0)
+        strength: 补偿强度 (默认1.0)
+
+    返回:
+        gain: cos⁴补偿增益
+    """
+    theta = radius_map * (np.pi/2)
+
+    gain = 1 / (np.cos(theta)**4 + 1e-6)
+
+    gain = gain**strength
+
+    return gain
+
+
+def fit_luma(L, radius_map):
+    """
+    拟合亮度(Luma)曲线
+
+    参数:
+        L: 亮度图 (R+Gr+Gb+B)/4
+        radius_map: 归一化半径图
+
+    返回:
+        gain_luma: 亮度增益
+    """
+    r = radius_map.flatten()
+    l = L.flatten()
+
+    mask = (l > 0) & (r < 0.995)
+
+    r = r[mask]
+    l = l[mask]
+
+    max_l = np.max(l)
+
+    weight = 0.4 + 0.6 * r
+
+    coeff = np.polyfit(r, l, 4, w=weight)
+
+    poly = np.poly1d(coeff)
+
+    fitted = poly(radius_map.flatten())
+
+    fitted = fitted.reshape(L.shape)
+
+    fitted = np.maximum(fitted, 0.001)
+
+    gain = max_l / fitted
+
+    return gain
+
+
+def residual_2d_correction(L, gain_luma):
+    """
+    2D残差校正
+
+    参数:
+        L: 原始亮度图
+        gain_luma: 亮度增益
+
+    返回:
+        residual: 残差校正系数
+    """
+    corrected = L * gain_luma
+
+    target = np.mean(corrected)
+
+    residual = target / (corrected + 1e-6)
+
+    residual = cv2.GaussianBlur(residual, (5,5), 0)
+
+    return residual
+
+
+def fit_chroma_ratio(ratio, radius_map):
+    """
+    拟合色度比曲线
+
+    参数:
+        ratio: 色度比图 (R/G 或 B/G)
+        radius_map: 归一化半径图
+
+    返回:
+        fitted_ratio: 拟合后的色度比
+    """
+    r = radius_map.flatten()
+    v = ratio.flatten()
+
+    mask = (v > 0) & (r < 0.98)
+
+    r = r[mask]
+    v = v[mask]
+
+    weight = 0.5 + 0.5 * r
+
+    coeff = np.polyfit(r, v, 3, w=weight)
+
+    poly = np.poly1d(coeff)
+
+    fitted = poly(radius_map.flatten())
+
+    return fitted.reshape(radius_map.shape)
+
+
+def edge_damping(gain, radius_map, start=1.0, width=0.1):
+    """
+    边缘稳定化处理
+
+    参数:
+        gain: 原始增益
+        radius_map: 归一化半径图
+        start: 开始衰减的半径比例 (默认1.0)
+        width: 衰减过渡区宽度 (默认0.1)
+
+    返回:
+        damped_gain: 衰减后的增益
+    """
+    end = start + width
+
+    w = np.clip((end - radius_map) / width, 0, 1)
+
+    gain = gain * w + 1 * (1 - w)
+
+    return gain
+
+
+def green_balance(gr, gb):
+    """
+    Green通道平衡
+
+    参数:
+        gr: Gr通道增益
+        gb: Gb通道增益
+
+    返回:
+        balanced_gr, balanced_gb: 平衡后的Gr和Gb增益
+    """
+    avg = (gr + gb) / 2
+
+    return avg, avg
+
+
+def compute_fisheye_lsc(brightness_map,
+                        circle_info,
+                        image_w,
+                        image_h,
+                        max_gain=7.9):
+    """
+    【工业版本】LSC算法 - 手机ISP真实流程
+
+    完整pipeline:
+    RAW Bayer -> Black Level Correction -> Valid Mask -> Grid Statistics
+    -> Brightness Map -> Compute Luma -> Cos⁴ Falloff Compensation
+    -> Radial Luma Fit -> 2D Residual Correction -> Chroma Ratio Fit
+    -> Edge Damping -> Green Balance -> Gain Clamp -> Final RGGB Gain Table
+
+    参数:
+        brightness_map: 包含R, Gr, Gb, B四个通道的亮度图字典
+        circle_info: (cx, cy, r) 圆心坐标和半径
+        image_w, image_h: 图像宽度和高度
+        max_gain: 最大增益限制
+
+    返回:
+        dict: 包含R, Gr, Gb, B四个通道的增益表
+    """
+    R = brightness_map["R"]
+    Gr = brightness_map["Gr"]
+    Gb = brightness_map["Gb"]
+    B = brightness_map["B"]
+
+    rows, cols = R.shape
+
+    radius_map = generate_radius_map(rows, cols, circle_info, image_w, image_h)
+
+    # Luma计算
+    L = (R + Gr + Gb + B) / 4
+
+    # cos⁴光学模型补偿
+    cos_gain = cos4_gain(radius_map, 0.5)
+
+    L_corrected = L * cos_gain
+
+    # 径向亮度拟合
+    gain_luma = fit_luma(L_corrected, radius_map)
+
+    # 2D残差校正
+    residual = residual_2d_correction(L, gain_luma)
+
+    gain_luma *= residual
+
+    # Green通道平均
+    G = (Gr + Gb) / 2
+
+    # 色度比计算
+    ratio_R = R / (G + 1e-6)
+    ratio_B = B / (G + 1e-6)
+
+    # 色度比拟合
+    fit_R = fit_chroma_ratio(ratio_R, radius_map)
+    fit_B = fit_chroma_ratio(ratio_B, radius_map)
+
+    # 最终增益计算
+    gain_R = gain_luma * fit_R
+    gain_B = gain_luma * fit_B
+
+    gain_Gr = gain_luma
+    gain_Gb = gain_luma
+
+    # 边缘稳定化
+    gain_R = edge_damping(gain_R, radius_map)
+    gain_B = edge_damping(gain_B, radius_map)
+    gain_Gr = edge_damping(gain_Gr, radius_map)
+    gain_Gb = edge_damping(gain_Gb, radius_map)
+
+    # Green通道平衡
+    gain_Gr, gain_Gb = green_balance(gain_Gr, gain_Gb)
+
+    # 增益钳位
+    gain_R = np.clip(gain_R, 1, max_gain)
+    gain_B = np.clip(gain_B, 1, max_gain)
+    gain_Gr = np.clip(gain_Gr, 1, max_gain)
+    gain_Gb = np.clip(gain_Gb, 1, max_gain)
+
+    return {
+        "R": gain_R.astype(np.float32),
+        "Gr": gain_Gr.astype(np.float32),
+        "Gb": gain_Gb.astype(np.float32),
+        "B": gain_B.astype(np.float32)
+    }
